@@ -11,10 +11,10 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from imgspec import encode, ingest, office, render
-from imgspec.encode import EncodeResult, VolumeLimitUnreachable
-from imgspec.ingest import SourceInfo, SourceKind
-from imgspec.model import (
+from imgconv import encode, ingest, office, render
+from imgconv.encode import EncodeResult, VolumeLimitUnreachable
+from imgconv.ingest import SourceInfo, SourceKind
+from imgconv.model import (
     ConflictPolicy,
     OutputSpec,
     SpecError,

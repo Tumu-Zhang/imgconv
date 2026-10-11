@@ -129,7 +129,7 @@ class PowerPointSession:
 
     def __init__(self, cache_dir: Path | None = None) -> None:
         self._cache_dir = Path(
-            cache_dir or Path(tempfile.mkdtemp(prefix="imgspec_ppt_"))
+            cache_dir or Path(tempfile.mkdtemp(prefix="imgconv_ppt_"))
         )
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._owns_cache = cache_dir is None

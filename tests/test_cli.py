@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from conftest import make_pdf, make_raster, read_size
-from imgspec.cli import main
+from imgconv.cli import main
 
 
 class TestDryRun:
@@ -115,7 +115,7 @@ class TestArgumentErrors:
 class TestSlidesError:
     def test_missing_powerpoint_is_reported(self, tmp_path, capsys, monkeypatch):
         """幻灯片缺 PowerPoint 时应报出可读错误，而不是静默跳过或崩溃。"""
-        from imgspec import office
+        from imgconv import office
 
         def unavailable(*_args, **_kwargs):
             raise office.OfficeUnavailableError(

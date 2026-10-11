@@ -8,7 +8,7 @@ import fitz
 from PIL import Image
 
 from conftest import make_pdf, make_raster
-from imgspec.ingest import SourceKind, classify, probe
+from imgconv.ingest import SourceKind, classify, probe
 
 
 class TestRaster:

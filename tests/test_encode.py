@@ -11,9 +11,9 @@ import pytest
 from PIL import Image
 
 from conftest import TIFF_ADOBE_DEFLATE, TIFF_JPEG, TIFF_LZW
-from imgspec import encode
-from imgspec.encode import VolumeLimitUnreachable
-from imgspec.model import OutputFormat, OutputSpec, TiffCompression
+from imgconv import encode
+from imgconv.encode import VolumeLimitUnreachable
+from imgconv.model import OutputFormat, OutputSpec, TiffCompression
 
 
 def noise_image(size: tuple[int, int] = (700, 700)) -> Image.Image:

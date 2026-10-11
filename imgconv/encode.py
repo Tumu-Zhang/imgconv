@@ -19,7 +19,7 @@ from typing import IO
 import numpy as np
 from PIL import Image
 
-from imgspec.model import (
+from imgconv.model import (
     OutputFormat,
     OutputSpec,
     TiffCompression,

@@ -3,7 +3,7 @@
 设计
 ----
 - 界面层字符串一律通过 ``t("key")`` 取值，不直接写死中文；
-- imgspec 核心层（管线错误、探测提示）暂不翻译，日志中的底层消息保持原文；
+- imgconv 核心层（管线错误、探测提示）暂不翻译，日志中的底层消息保持原文；
 - 切换语言走 ``set_lang()`` 后重建主窗口（见 app.py 的重建回调），
   不做逐控件 retranslate —— 窗口重建的成本远低于维护两套映射。
 """
@@ -124,6 +124,10 @@ _STRINGS: dict[str, dict[str, str]] = {
     "export_log_done": {"zh": "日志已导出", "en": "Log exported"},
     "log_exported": {"zh": "日志已导出：{path}", "en": "Log exported: {path}"},
     "log_export_failed": {"zh": "日志导出失败：{err}", "en": "Failed to export log: {err}"},
+    "settings_migrated": {
+        "zh": "已把旧版的 {n} 项偏好设置迁移到新版本名下",
+        "en": "Migrated {n} preference(s) from the previous version",
+    },
     "open_containing_folder": {"zh": "打开所在文件夹", "en": "Open Folder"},
     "btn_feedback": {"zh": "反馈", "en": "Feedback"},
     "feedback_tooltip": {
@@ -366,12 +370,17 @@ def set_lang(lang: str) -> None:
     _lang = lang if lang in LANGS else "zh"
 
 
-def t(key: str, **kwargs) -> str:
-    """按 key 取当前语言的文本；缺 key 或缺译文时回退中文，再退到 key 本身。"""
-    entry = _STRINGS.get(key)
+def t(text_key: str, **kwargs) -> str:
+    """按 text_key 取当前语言的文本；缺 key 或缺译文时回退中文，再退到 key 本身。
+
+    首参刻意不叫 ``key``：调用处会用 ``key=`` 传模板变量（如体积分桶
+    ``t("toast_dist_entry", key="1–5 MB", n=3)``），若形参同名会撞成
+    ``TypeError: t() got multiple values for argument 'key'``。
+    """
+    entry = _STRINGS.get(text_key)
     if entry is None:
-        return key
-    text = entry.get(_lang) or entry.get("zh") or key
+        return text_key
+    text = entry.get(_lang) or entry.get("zh") or text_key
     if kwargs:
         try:
             return text.format(**kwargs)

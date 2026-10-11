@@ -20,7 +20,7 @@ def main() -> int:
 
     if SELFTEST_FLAG in sys.argv:
         # 不开窗口，跑一次真实的 位图->TIFF、PDF->PNG 转换并校验结果
-        from imgspec.selftest import main as run_selftest
+        from imgconv.selftest import main as run_selftest
 
         return run_selftest()
 

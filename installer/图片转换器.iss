@@ -24,7 +24,7 @@
 
 #define MyAppName      "图片转换器"
 #define MyAppExeName   "图片转换器.exe"
-#define MyAppPublisher "imgspec"
+#define MyAppPublisher "imgconv"
 #define MyAppComments  "科研投稿图片规格化工具"
 #define MySourcePath   ".."
 

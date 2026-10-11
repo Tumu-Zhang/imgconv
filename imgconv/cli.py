@@ -5,16 +5,16 @@
 用法示例
 --------
     # 8.5cm 宽、300dpi、TIFF（无损）、输出到 ./converted
-    python -m imgspec figure.pdf --width 8.5 --unit cm --dpi 300 --format tiff
+    python -m imgconv figure.pdf --width 8.5 --unit cm --dpi 300 --format tiff
 
     # 只要第 2 页，限制单图 10MB
-    python -m imgspec slides.pptx --width 170 --unit mm --dpi 300 --pages 2 --limit 10
+    python -m imgconv slides.pptx --width 170 --unit mm --dpi 300 --pages 2 --limit 10
 
     # 精确像素尺寸
-    python -m imgspec a.png b.png --px-width 2550 --px-height 3300 --dpi 300
+    python -m imgconv a.png b.png --px-width 2550 --px-height 3300 --dpi 300
 
     # 只预览不写盘
-    python -m imgspec *.pdf --width 8.5 --unit cm --dry-run
+    python -m imgconv *.pdf --width 8.5 --unit cm --dry-run
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from imgspec import ingest
-from imgspec.model import (
+from imgconv import ingest
+from imgconv.model import (
     ConflictPolicy,
     OutputFormat,
     OutputSpec,
@@ -33,7 +33,7 @@ from imgspec.model import (
     TiffCompression,
     Unit,
 )
-from imgspec.pipeline import Converter, ProgressEvent, default_output_dir
+from imgconv.pipeline import Converter, ProgressEvent, default_output_dir
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -50,7 +50,7 @@ def _force_utf8_stdout() -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="imgspec",
+        prog="imgconv",
         description="科研投稿图片规格化：统一 DPI、物理尺寸与文件格式。"
                     "对 PPT/PDF 按目标 DPI 重新矢量渲染，对图片做高质量重采样。",
         formatter_class=argparse.RawDescriptionHelpFormatter,

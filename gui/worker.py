@@ -12,8 +12,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from imgspec.model import OutputSpec
-from imgspec.pipeline import ConversionReport, Converter
+from imgconv.model import OutputSpec
+from imgconv.pipeline import ConversionReport, Converter
 
 
 class ConversionWorker(QObject):

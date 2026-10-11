@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from imgspec.model import (
+from imgconv.model import (
     OutputFormat,
     OutputSpec,
     SizeMode,

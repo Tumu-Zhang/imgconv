@@ -18,9 +18,9 @@ from urllib.parse import quote
 
 from PySide6.QtCore import QThread, Signal
 
-from imgspec import __version__
+from imgconv import __version__
 
-REPO = "Tumu-Zhang/imgspec"
+REPO = "Tumu-Zhang/imgconv"
 RELEASES_PAGE = f"https://github.com/{REPO}/releases/latest"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 ISSUES_PAGE = f"https://github.com/{REPO}/issues/new/choose"
@@ -36,7 +36,7 @@ _ERROR_LINE_MAX = 160  # 单条问题记录截断长度（路径类消息可能�
 
 
 def app_version() -> str:
-    """当前版本号。唯一事实源：imgspec.__version__。"""
+    """当前版本号。唯一事实源：imgconv.__version__。"""
     return __version__
 
 
@@ -178,7 +178,7 @@ def fetch_latest_release(timeout: float = TIMEOUT_SECONDS) -> dict | None:
     request = urllib.request.Request(
         LATEST_RELEASE_API,
         headers={
-            "User-Agent": f"imgspec/{app_version()}",
+            "User-Agent": f"imgconv/{app_version()}",
             "Accept": "application/vnd.github+json",
         },
     )

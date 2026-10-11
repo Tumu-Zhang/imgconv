@@ -99,9 +99,9 @@ from gui.widgets import (
     ToastNotification,
 )
 from gui.worker import ConversionWorker
-from imgspec import ingest
-from imgspec.ingest import SourceInfo, SourceKind
-from imgspec.model import (
+from imgconv import ingest
+from imgconv.ingest import SourceInfo, SourceKind
+from imgconv.model import (
     ConflictPolicy,
     OutputFormat,
     OutputSpec,
@@ -110,7 +110,40 @@ from imgspec.model import (
     TiffCompression,
     Unit,
 )
-from imgspec.pipeline import ConversionReport, default_output_dir
+from imgconv.pipeline import ConversionReport, default_output_dir
+
+# ----------------------------------------------------------------------
+# 设置迁移：v1.x 用的是 imgspec / ImageSpecTool 这套身份
+# ----------------------------------------------------------------------
+# 2.0.0 把软件英文名统一成 imgconv，QSettings 的组织名与应用名随之改变 →
+# 注册表键路径整个换了一条。不搬的话，老用户升级后窗口大小、主题、语言、
+# 输出目录等偏好会全部悄悄回到默认值。
+LEGACY_SETTINGS = ("imgspec", "ImageSpecTool")
+_legacy_settings_checked = False
+
+
+def _migrate_legacy_settings(target: QSettings, legacy_factory=None) -> int:
+    """把旧身份的配置搬到新键下，返回搬运的键数量（0 = 没搬）。
+
+    只在「新键一个都没有」且「旧键存在」时执行 —— 绝不覆盖用户升级后
+    自己改过的值。任何异常都吞掉（迁移失败不该拦住启动）。
+    legacy_factory 供测试注入到临时 ini，默认指向真实的旧注册表位置。
+    """
+    factory = legacy_factory or (lambda: QSettings(*LEGACY_SETTINGS))
+    try:
+        if target.allKeys():
+            return 0
+        legacy = factory()
+        keys = legacy.allKeys()
+        if not keys:
+            return 0
+        for key in keys:
+            target.setValue(key, legacy.value(key))
+        target.sync()
+        return len(keys)
+    except Exception:  # noqa: BLE001
+        return 0
+
 
 # 列布局：勾选 | 序号 | 文件名 | 页码 | 源信息 | 输出尺寸 | 状态
 COL_CHECK, COL_INDEX, COL_NAME, COL_PAGES, COL_SOURCE, COL_TARGET, COL_STATUS = range(7)
@@ -210,9 +243,16 @@ class MainWindow(QMainWindow):
         self._session_log = SessionLog(self._session_log_dir())
         self._session_log.start(self._session_header())
 
+        # v1.x → 2.0 的偏好迁移条数（由 _settings() 填充，界面就绪后再上屏）
+        self._settings_migrated: int = 0
+
         self._load_language()
         self._build_ui()
         self._load_settings()
+        if self._settings_migrated:
+            self._append_log_raw(
+                i18n.t("settings_migrated", n=self._settings_migrated), "info"
+            )
         self._refresh_preview()
         self._notify_previous_crash()
 
@@ -303,14 +343,17 @@ class MainWindow(QMainWindow):
         self.feedback_email_action.triggered.connect(self.send_feedback_email)
         self.feedback_btn.setMenu(self.feedback_menu)
 
-        # 主按钮 = 立即检查；右侧箭头弹出菜单（含「启动时自动检查更新」开关）
+        # 检查更新：与「反馈」同款 —— 整块按钮点击即弹菜单（InstantPopup），
+        # 菜单首项「立即检查」承担原本的主点击行为。
+        # ⚠️ 两个 QToolButton 必须同 popupMode：同为顶栏 ghostBtn，交互语义
+        # 不一致（一个整块弹、一个要找准右侧小箭头）用户会当成两个控件的 bug；
+        # tools/ui_audit.py 的「同类控件一致性」也据此断言。
         self.update_btn = QToolButton()
         self.update_btn.setObjectName("ghostBtn")
         self.update_btn.setText(i18n.t("btn_check_update"))
         self.update_btn.setToolTip(i18n.t("update_btn_tooltip"))
         self.update_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.update_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
-        self.update_btn.clicked.connect(lambda: self.check_updates(manual=True))
+        self.update_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
 
         self.update_menu = QMenu(self.update_btn)
         self.update_now_action = self.update_menu.addAction(i18n.t("btn_check_update"))
@@ -1236,7 +1279,7 @@ class MainWindow(QMainWindow):
         return item
 
     def _describe_source(self, info: SourceInfo) -> str:
-        """本地化的源信息（类型 + 关键读数），替代 imgspec 的中文版描述。"""
+        """本地化的源信息（类型 + 关键读数），替代 imgconv 的中文版描述。"""
         kind = i18n.t(KIND_LABEL_KEYS[info.kind])
         if info.kind is SourceKind.RASTER and info.pixel_size:
             w, h = info.pixel_size
@@ -2130,7 +2173,7 @@ class MainWindow(QMainWindow):
             note=i18n.t("log_privacy_note"),
         )
         self._save_log_text(
-            text, i18n.t("export_log_title"), Path.home() / f"imgspec_log_{stamp}.txt"
+            text, i18n.t("export_log_title"), Path.home() / f"imgconv_log_{stamp}.txt"
         )
 
     def export_crash_log(self) -> None:
@@ -2141,7 +2184,7 @@ class MainWindow(QMainWindow):
             return
         stamp = QDateTime.currentDateTime().toString("yyyyMMdd_HHmmss")
         self._save_log_text(
-            text, i18n.t("crash_export_title"), Path.home() / f"imgspec_crash_{stamp}.txt"
+            text, i18n.t("crash_export_title"), Path.home() / f"imgconv_crash_{stamp}.txt"
         )
 
     def _save_log_text(self, text: str, title: str, default_path: Path) -> None:
@@ -2169,7 +2212,7 @@ class MainWindow(QMainWindow):
     # 会话日志：本地留档 + 上次异常退出的提示与导出
     # ------------------------------------------------------------------
     def _session_log_dir(self) -> Path:
-        """会话日志目录（默认 %LOCALAPPDATA%\\imgspec\\...\\logs）。
+        """会话日志目录（默认 %LOCALAPPDATA%\\imgconv\\...\\logs）。
 
         单独抽成方法是为了测试能把它指到临时目录 —— 否则跑测试会往
         用户真实的 AppData 里写日志。
@@ -2177,7 +2220,7 @@ class MainWindow(QMainWindow):
         base = QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.AppLocalDataLocation
         )
-        return Path(base or Path.home() / ".imgspec") / "logs"
+        return Path(base or Path.home() / ".imgconv") / "logs"
 
     def _session_header(self) -> str:
         lines = ["图片转换器 会话日志", "=" * 44]
@@ -2387,7 +2430,13 @@ class MainWindow(QMainWindow):
     # 设置持久化
     # ==================================================================
     def _settings(self) -> QSettings:
-        return QSettings("imgspec", "ImageSpecTool")
+        global _legacy_settings_checked
+        s = QSettings("imgconv", "ImgConvTool")
+        if not _legacy_settings_checked:  # 每个进程只探一次
+            _legacy_settings_checked = True
+            # 只记数不上屏：_settings() 在界面搭好之前就会被调用
+            self._settings_migrated = _migrate_legacy_settings(s)
+        return s
 
     def _load_language(self) -> None:
         """读取语言偏好。必须在 _build_ui 之前调用（所有文案都依赖它）。"""

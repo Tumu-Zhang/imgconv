@@ -6,10 +6,10 @@
     python tools/make_release_zip.py
 
 产物：
-    dist\\release\\imgspec-v<版本>-win64.zip
-    内含 imgspec-v<版本>-win64\\{图片转换器.exe, _internal\\, README.md}
+    dist\\release\\imgconv-v<版本>-win64.zip
+    内含 imgconv-v<版本>-win64\\{图片转换器.exe, _internal\\, README.md}
 
-版本号取自 imgspec.__version__（唯一事实源）—— 发布时只用确认这个值
+版本号取自 imgconv.__version__（唯一事实源）—— 发布时只用确认这个值
 与即将打的 tag 一致即可，不必在两处手改。
 """
 
@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from imgspec import __version__  # noqa: E402
+from imgconv import __version__  # noqa: E402
 
 APP_NAME = "图片转换器"
 
@@ -43,7 +43,7 @@ def main() -> int:
         print("请先执行： python tools/build.py", file=sys.stderr)
         return 1
 
-    folder = f"imgspec-v{__version__}-win64"
+    folder = f"imgconv-v{__version__}-win64"
     out_dir = ROOT / "dist" / "release"
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / f"{folder}.zip"

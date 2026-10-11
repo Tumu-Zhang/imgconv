@@ -33,7 +33,7 @@ python tools/make_installer.py # 第二步：包成安装程序
 
 | 类别 | 内容 | 排除原因 |
 |---|---|---|
-| **源码** | `main.py`、`imgspec\*.py`、`gui\*.py` | 已编译进 `_internal`（PYZ / `base_library.zip`），运行时不需要源码 |
+| **源码** | `main.py`、`imgconv\*.py`、`gui\*.py` | 已编译进 `_internal`（PYZ / `base_library.zip`），运行时不需要源码 |
 | **测试** | `tests\`、`conftest.py`、`.pytest_cache\` | 仅开发期使用 |
 | **打包脚本** | `tools\build.py`、`tools\make_icon.py`、`installer\图片转换器.iss` | 分发给终端用户无意义 |
 | **调试产物** | `build\`、`*.spec`、`*.pyc`、`__pycache__\` | PyInstaller 中间产物，每次打包重新生成 |
@@ -72,7 +72,7 @@ python tools/make_installer.py # 第二步：包成安装程序
 |---|---|---|
 | 软件名称 | 图片转换器 | `.iss` → `MyAppName` |
 | 版本号 | **1.0.0** | `.iss` → `MyAppVersion`；改 `make_installer.py` 的 `DEFAULT_VERSION` 或用 `--version` |
-| 发布者 | imgspec | `.iss` → `MyAppPublisher` |
+| 发布者 | imgconv | `.iss` → `MyAppPublisher` |
 | 安装目录（当前用户） | `%LOCALAPPDATA%\Programs\图片转换器` | `.iss` → `MyAppDirName` |
 | 安装目录（所有用户） | `%ProgramFiles%\图片转换器` | 同上，走 `#ifdef MyAppScopeMachine` 分支 |
 | 开始菜单 | `图片转换器` 组，含主程序与「卸载 图片转换器」 | `[Icons]` |
@@ -95,10 +95,16 @@ python tools/make_installer.py --version 1.1.0   # 指定版本号
 | 安装目录 | `%LOCALAPPDATA%\Programs\图片转换器` | `%ProgramFiles%\图片转换器` |
 | 管理员权限 | 不需要，双击即装 | 需要，弹 UAC |
 | 卸载入口位置 | 设置 → 应用 → 已安装的应用 | 控制面板 → 程序和功能 |
-| AppId | `imgspec.图片转换器.user` | `imgspec.图片转换器` |
+| AppId | `imgconv.图片转换器.user` | `imgconv.图片转换器` |
 | 适用 | 发给同事、个人电脑 | 机房统一部署 |
 
 两种版本的 AppId 不同，**装在同一台机器上不会互相覆盖**。
+
+> ⚠️ **2.0.0 换了 AppId**（`imgspec.*` → `imgconv.*`，随英文名统一而变）。
+> Windows 因此把它当成**另一个应用**：装了 1.x 的机器上直接运行 2.0 安装包**不会**升级覆盖，
+> 两个版本会并存。升级步骤：先在「已安装的应用」里卸载 1.x，再装 2.0。
+> 本地绿色版（zip）不受影响，直接解压覆盖即可；用户偏好会自动迁移
+> （见 `gui/main_window.py::_migrate_legacy_settings`）。
 
 ### 界面语言：默认英文，如何换中文
 
@@ -136,14 +142,14 @@ python tools/make_installer.py --version 1.1.0   # 指定版本号
 
 **Microsoft PowerPoint —— 仅在转换 PPT/PPTX/PPS 时需要。**
 
-没装 PowerPoint 时，`imgspec/office.py` 会给出明确提示并建议「先另存为 PDF 再拖进来」，
+没装 PowerPoint 时，`imgconv/office.py` 会给出明确提示并建议「先另存为 PDF 再拖进来」，
 不会静默产出空白图。PDF、SVG、图片这三类输入完全不受影响。
 
 ### 系统与配置
 
 - **系统要求**：Windows 10 / 11，64 位（项目在 win_amd64 下打包）
-- **用户设置**：首次启动由 Qt 的 `QSettings("imgspec", "ImageSpecTool")` 自动在
-  `HKCU\Software\imgspec\ImageSpecTool` 创建。无需预置配置文件，也不需要写权限到安装目录 ——
+- **用户设置**：首次启动由 Qt 的 `QSettings("imgconv", "ImgConvTool")` 自动在
+  `HKCU\Software\imgconv\ImgConvTool` 创建。无需预置配置文件，也不需要写权限到安装目录 ——
   所以当前用户版在普通权限下功能完整。
 
 ---
@@ -171,7 +177,7 @@ python tools/make_installer.py --version 1.1.0   # 指定版本号
 ```
 
 自检会生成测试图、跑一次真实的「位图→TIFF」与「PDF→PNG」转换，再读回校验像素与 DPI。
-结果同时写入 `%TEMP%\imgspec_selftest_report.txt`（无控制台的 exe 以这个文件为准）。
+结果同时写入 `%TEMP%\imgconv_selftest_report.txt`（无控制台的 exe 以这个文件为准）。
 
 ```bat
 "%LOCALAPPDATA%\Programs\图片转换器\图片转换器.exe" --smoke
@@ -196,7 +202,7 @@ python tools/make_installer.py --version 1.1.0   # 指定版本号
 cd /d "%LOCALAPPDATA%\Programs\图片转换器"
 图片转换器.exe --smoke
 图片转换器.exe --selftest
-type "%TEMP%\imgspec_selftest_report.txt"
+type "%TEMP%\imgconv_selftest_report.txt"
 ```
 
 报告应全部通过。再做一次真实转换：拖入一个 PDF 或 PNG，设 8.5 cm / 300 dpi / TIFF，
@@ -217,7 +223,7 @@ type "%TEMP%\imgspec_selftest_report.txt"
 - [ ] 桌面快捷方式（若建了）消失
 - [ ] 系统卸载列表中不再有该条目
 
-> **刻意保留的两项**：卸载不会删 `HKCU\Software\imgspec` 下的用户参数设置，
+> **刻意保留的两项**：卸载不会删 `HKCU\Software\imgconv` 下的用户参数设置，
 > 也不会删任何 `converted\` 输出目录 —— 重装后设置还在，用户产出不会被误删。
 
 **4. 边界检查**
@@ -250,7 +256,7 @@ setup.exe /VERYSILENT /NORESTART /SP- /LOG=install.log
 | `--smoke` | exit=0（GUI 起来 800 ms 后正常退出） |
 | `--selftest` | exit=0，**10 项全通过**，含 PowerPoint 16.0 检测 |
 | 卸载 | exit=0；安装目录、开始菜单组、桌面快捷方式、卸载列表条目**全部清除** |
-| 用户参数 | `HKCU\Software\imgspec` **保留**（刻意为之） |
+| 用户参数 | `HKCU\Software\imgconv` **保留**（刻意为之） |
 
 自检报告关键行：
 

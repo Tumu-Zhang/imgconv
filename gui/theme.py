@@ -1,4 +1,4 @@
-"""界面主题：浅色/深色双主题、现代化样式表与自绘品牌图标。
+"""界面主题：浅色/深色双主题、现代化样式表与品牌图标。
 
 设计方向
 --------
@@ -20,15 +20,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtGui import (
-    QColor,
     QFont,
     QFontDatabase,
     QFontMetrics,
     QIcon,
-    QPainter,
-    QPen,
     QPixmap,
 )
 
@@ -293,158 +290,44 @@ LOG_COLORS = {
 
 
 # ----------------------------------------------------------------------
-# 自绘品牌图标：B6「规格框」精修版 —— 深皇家蓝底板 + 青色尺寸标注线 +
-# 白色实线原框（山形）+ 白色虚线新尺寸框 + 青色斜向双头箭头 + img/spec 字标
+# 品牌图标：「IMG / CONV 规格框」位图定稿（2026-10-11 定稿）
 # ----------------------------------------------------------------------
-# 语义：实线原框 = 输入图片；右下虚线大框 = 拉伸后的目标规格；
-# 交角之间的斜向双头箭头 = 「横向/纵向拉到规格」的动作；
-# img（右上）/ spec（左下）= 英文名拆字入标。
-# 品牌色固定，不随界面主题变化：任务栏、标题栏、文件夹里看到的
-# 始终是同一枚标记，利于辨识。
-BRAND_TILE = "#1e40af"          # 底板：深皇家蓝
-BRAND_FRAME = "#ffffff"         # 实线原框 / 虚线新框 / 近山（白）
-BRAND_MOUNTAIN_FAR = "#8db2f2"  # 远山（浅蓝）
-BRAND_SPEC = "#22d3ee"          # 尺寸标注线 / 双头箭头（品牌青）
+# 语义：左上白色面板（内含柱状图）= 待处理的源图；右下青色虚线大框 =
+# 输出规格；斜向青色双头箭头 = 拉伸到规格的动作；顶部与左侧青色尺寸标注
+# 线 = 量尺寸；双十字星 = 精修；IMG（右上）/ CONV（左侧竖排）= 英文名
+# 拆字入标。
+#
+# 视觉基准是设计定稿位图（image-converter-logo/imgspec-logo-A-fontfix.png，
+# 仓库外）：tools/make_brand_master.py 给它加圆角蒙版（底板圆角 180/1024，
+# 角外透明，图标惯例）并降采样到 512px 后 base64 内嵌进 gui/brand_master.py
+# （生成文件）。运行时只做一次解码 + 平滑缩放——窗口图标、顶栏标记、
+# 关于页大图与 exe 文件图标（tools/make_icon.py 生成的 icon.ico）全部
+# 同源，与设计稿零差异。品牌标记不随界面主题变化。
 
 
-def icon_pixmap(size: int, theme_name: str | None = None) -> QPixmap:
-    """应用图标：B6「规格框」精修版（2026-10-09 定稿）。
+@lru_cache(maxsize=1)
+def _master_pixmap() -> QPixmap:
+    """解码内嵌品牌母版（512px 圆角方，角外透明），进程内只解一次。"""
+    from gui import brand_master
 
-    深皇家蓝圆角方底上：顶部与左侧青色尺寸标注线（端点刻度）、
-    白色实线原框（内含远/近山）、右下白色虚线新尺寸框、
-    两框交角之间的青色斜向双头箭头；≥96px 追加 img（右上，右缘对齐
-    虚线框）与 spec（左下）字标。
-
-    小尺寸做减法（与设计方案一致）：
-      - 32-47px：省去标注线与字标，虚线保留；
-      - <32px：只留实框 + 单山 + 虚框轮廓（虚线并成实线更清晰），
-        山形放大，笔画整体加粗；
-    theme_name 参数保留以兼容旧调用；品牌标记本身不随主题变化。
-    """
-    u = size / 240.0  # 设计稿 240 视箱 → 目标尺寸
-    # 小尺寸笔画补偿：16px 下 6/240 ≈ 0.4px 会直接消失，按档位加粗
-    boost = 1.0 if size >= 48 else (1.4 if size >= 32 else 1.7)
-
-    def pt(x: float, y: float) -> QPointF:
-        return QPointF(x * u, y * u)
-
-    def pen(color: str, w: float) -> QPen:
-        p = QPen(QColor(color), max(1.0, w * boost * u))
-        p.setCapStyle(Qt.PenCapStyle.RoundCap)
-        p.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        return p
-
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-
-    painter = QPainter(pixmap)
-    try:
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-
-        # 底板：深皇家蓝圆角方（扁平，无渐变）
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(BRAND_TILE))
-        painter.drawRoundedRect(QRectF(12 * u, 12 * u, 216 * u, 216 * u), 52 * u, 52 * u)
-
-        # 尺寸标注线（≥48px）：顶部横线 + 左侧竖线，端点带刻度
-        if size >= 48:
-            painter.setPen(pen(BRAND_SPEC, 4))
-            painter.drawLine(pt(48, 58), pt(132, 58))
-            painter.drawLine(pt(48, 52), pt(48, 64))
-            painter.drawLine(pt(132, 52), pt(132, 64))
-            painter.drawLine(pt(30, 76), pt(30, 138))
-            painter.drawLine(pt(24, 76), pt(36, 76))
-            painter.drawLine(pt(24, 138), pt(36, 138))
-
-        # 实线原框：输入图片
-        painter.setPen(pen(BRAND_FRAME, 6))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(QRectF(48 * u, 76 * u, 84 * u, 62 * u))
-
-        # 山形：<32px 只留近山并放大（单色白，小尺寸下层次反而模糊）
-        painter.setPen(Qt.PenStyle.NoPen)
-        far = painter_path()
-        if far is not None and size >= 32:
-            far.moveTo(pt(62, 128))
-            far.lineTo(pt(80, 100))
-            far.lineTo(pt(98, 128))
-            far.closeSubpath()
-            painter.setBrush(QColor(BRAND_MOUNTAIN_FAR))
-            painter.drawPath(far)
-        near = painter_path()
-        if near is not None:
-            if size >= 32:
-                near.moveTo(pt(82, 128))
-                near.lineTo(pt(98, 106))
-                near.lineTo(pt(114, 128))
-            else:
-                near.moveTo(pt(64, 128))
-                near.lineTo(pt(88, 96))
-                near.lineTo(pt(112, 128))
-            near.closeSubpath()
-            painter.setBrush(QColor(BRAND_FRAME))
-            painter.drawPath(near)
-
-        # 虚线新尺寸框：右下、更大，与原框角部交叠
-        # <32px 时 12:8 的虚线节奏不足 1px，并成实线轮廓反而清晰
-        painter.setPen(pen(BRAND_FRAME, 5))
-        if size >= 32:
-            dash, gap = 12.0, 8.0
-
-            def dashed(x1: float, y1: float, x2: float, y2: float) -> None:
-                import math
-
-                length = math.hypot(x2 - x1, y2 - y1)
-                if length <= 0:
-                    return
-                step = 0.0
-                while step < length:
-                    seg_end = min(length, step + dash)
-                    painter.drawLine(
-                        pt(x1 + (x2 - x1) * step / length, y1 + (y2 - y1) * step / length),
-                        pt(x1 + (x2 - x1) * seg_end / length, y1 + (y2 - y1) * seg_end / length),
-                    )
-                    step += dash + gap
-
-            dashed(92, 112, 208, 112)
-            dashed(208, 112, 208, 204)
-            dashed(208, 204, 92, 204)
-            dashed(92, 204, 92, 112)
-        else:
-            painter.drawRect(QRectF(92 * u, 112 * u, 116 * u, 92 * u))
-
-        # 斜向双头箭头（≥32px）：轴 + 两端各一横一竖短腿（45° 拉伸手柄）
-        if size >= 32:
-            painter.setPen(pen(BRAND_SPEC, 5))
-            painter.drawLine(pt(144, 150), pt(168, 174))
-            painter.drawLine(pt(144, 150), pt(144, 161))
-            painter.drawLine(pt(144, 150), pt(155, 150))
-            painter.drawLine(pt(168, 174), pt(168, 163))
-            painter.drawLine(pt(168, 174), pt(157, 174))
-
-        # 字标（≥96px）：img 右缘对齐虚线框（x=208），spec 左缘对齐左标注线
-        if size >= 96:
-            font = QFont(ui_family())
-            font.setPixelSize(max(6, round(26 * u)))
-            font.setWeight(QFont.Weight.DemiBold)
-            painter.setFont(font)
-            painter.setPen(QColor(BRAND_FRAME))
-            metrics = QFontMetrics(font)
-            img_width = metrics.horizontalAdvance("img")
-            painter.drawText(QPointF(208 * u - img_width, 72 * u), "img")
-            painter.drawText(QPointF(28 * u, 208 * u), "spec")
-    finally:
-        painter.end()
+    data = QByteArray.fromBase64(brand_master.MASTER_B64.encode("ascii"))
+    pixmap = QPixmap()
+    if not pixmap.loadFromData(data, "PNG"):
+        raise RuntimeError("品牌母版解码失败：gui/brand_master.py 内嵌数据损坏")
     return pixmap
 
 
-def painter_path():
-    """延迟导入 QPainterPath，避免某些无 GUI 环境报错。"""
-    try:
-        from PySide6.QtGui import QPainterPath
-        return QPainterPath()
-    except Exception:  # noqa: BLE001
-        return None
+def icon_pixmap(size: int, theme_name: str | None = None) -> QPixmap:
+    """应用图标：品牌母版平滑缩放到 size×size。
+
+    theme_name 参数保留以兼容旧调用；品牌标记本身不随主题变化。
+    """
+    return _master_pixmap().scaled(
+        size,
+        size,
+        Qt.AspectRatioMode.IgnoreAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
 
 
 def app_icon(theme_name: str | None = None) -> QIcon:
@@ -500,38 +383,41 @@ QLabel#cardTitle {{
     font-size: {FONT_LG}pt;
     font-weight: 600;
 }}
-QPushButton#ghostBtn {{
+/* 顶栏 ghost 按钮：QPushButton（无菜单）与 QToolButton（带下拉菜单）同款。
+   两条规则必须严格对齐 —— Qt 的 QToolButton 会为菜单指示器额外留出约 3px
+   高度，并各自套用不同的默认内边距，不锁死就会让同一行三个按钮高矮不一。
+   故：同一 padding + 同一内容高度区间（min/max-height 取同一值）。 */
+QPushButton#ghostBtn,
+QToolButton#ghostBtn {{
     background: transparent;
     border: none;
     border-radius: {RADIUS_CTRL}px;
     padding: 5px 12px;
+    min-height: 20px;
+    max-height: 20px;
     color: {t.text_secondary};
 }}
-QPushButton#ghostBtn:hover {{
+QPushButton#ghostBtn:hover,
+QToolButton#ghostBtn:hover {{
     background: {t.bg_hover};
     color: {t.text_primary};
 }}
-QPushButton#ghostBtn:pressed {{
+QPushButton#ghostBtn:pressed,
+QToolButton#ghostBtn:pressed {{
     background: {t.bg_sunk};
 }}
 QPushButton#ghostBtn:disabled {{
     color: {t.text_tertiary};
     background: transparent;
 }}
-/* 检查更新是 QToolButton（带下拉菜单），外观与 ghostBtn 对齐 */
-QToolButton#ghostBtn {{
-    background: transparent;
-    border: none;
-    border-radius: {RADIUS_CTRL}px;
-    padding: 5px 8px;
-    color: {t.text_secondary};
-}}
-QToolButton#ghostBtn:hover {{
-    background: {t.bg_hover};
-    color: {t.text_primary};
-}}
-QToolButton#ghostBtn:pressed {{
-    background: {t.bg_sunk};
+/* 下拉箭头显式定位：subcontrol-origin/padding 同源，保证两个
+   QToolButton 的箭头垂直居中、距文字间距一致（不靠各 popupMode
+   的默认值渲染）。 */
+QToolButton#ghostBtn::menu-indicator {{
+    subcontrol-origin: padding;
+    subcontrol-position: right center;
+    width: 9px;
+    right: 3px;
 }}
 
 /* 描边强调按钮：空状态 CTA 等次级主动作 */
@@ -756,10 +642,14 @@ QTableWidget QLineEdit#pagesEditor {{
 }}
 
 /* ---------- 勾选与单选 ---------- */
+/* min-height 取 20px（+ 上下 padding 2px = 24px 总高）：
+   16px 指示器 + 4px 内边距只有 22px，低于 WCAG 2.5.8 的最小点击目标 24×24
+   （tools/ui_audit.py 的最小热区断言）。 */
 QCheckBox, QRadioButton {{
     spacing: {SPACE_SM}px;
     color: {t.text_primary};
     padding: 2px 0px;
+    min-height: 20px;
 }}
 QCheckBox:disabled, QRadioButton:disabled {{ color: {t.text_tertiary}; }}
 QCheckBox::indicator {{

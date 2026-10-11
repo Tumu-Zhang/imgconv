@@ -14,7 +14,7 @@ from conftest import (
     read_size,
     read_tiff_compression,
 )
-from imgspec.model import (
+from imgconv.model import (
     ConflictPolicy,
     OutputFormat,
     OutputSpec,
@@ -22,7 +22,7 @@ from imgspec.model import (
     TiffCompression,
     Unit,
 )
-from imgspec.pipeline import convert, default_output_dir
+from imgconv.pipeline import convert, default_output_dir
 
 
 def base_spec(out_dir, **kwargs) -> OutputSpec:

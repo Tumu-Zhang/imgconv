@@ -16,7 +16,7 @@ import fitz  # PyMuPDF
 import numpy as np
 from PIL import Image
 
-from imgspec.model import TargetGeometry
+from imgconv.model import TargetGeometry
 
 Image.MAX_IMAGE_PIXELS = 600_000_000
 

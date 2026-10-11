@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
 
     app = QApplication(args)
     app.setApplicationName("图片转换器")
-    app.setOrganizationName("imgspec")
+    app.setOrganizationName("imgconv")
 
     # 跟随系统主题，除非命令行显式指定
     if "--dark" in args:

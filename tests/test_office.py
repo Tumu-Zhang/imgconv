@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from imgspec import office
+from imgconv import office
 
 
 class FakeCompleted:

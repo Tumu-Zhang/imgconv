@@ -32,7 +32,7 @@ def qapp():
 def window(qapp, tmp_path, monkeypatch):
     """每次拿到一个干净的窗口，配置读写隔离到临时目录。
 
-    注意不能只 patch `QSettings.fileName`：`QSettings("imgspec", "ImageSpecTool")`
+    注意不能只 patch `QSettings.fileName`：`QSettings("imgconv", "ImgConvTool")`
     在构造时就已经定了存储位置（Windows 上是注册表），`fileName()` 只是查询。
     真正的情形是：用户跑过软件后设置被写进注册表，测试再读到它，结果别人的设置
     把测试搞红了。所以这里直接替换窗口读取配置的入口，让它落到临时 ini 文件。
@@ -461,7 +461,7 @@ class TestPerFileSizes:
 
 class TestFormatRows:
     def test_encoding_rows_follow_format(self, window):
-        from imgspec.model import OutputFormat
+        from imgconv.model import OutputFormat
 
         form = window._format_form
         window.fmt_combo.setCurrentIndex(
@@ -529,7 +529,7 @@ class TestOutputNaming:
     """「输出与命名」组回归右栏后的读写与规格传递。"""
 
     def test_output_settings_read_write(self, window, tmp_path):
-        from imgspec.model import ConflictPolicy
+        from imgconv.model import ConflictPolicy
 
         window.out_dir = str(tmp_path / "out")
         window.name_template = "{stem}_x"
@@ -549,7 +549,7 @@ class TestOutputNaming:
         assert window.name_edit.text() == "{stem}"
 
     def test_settings_reach_spec(self, window, tmp_path):
-        from imgspec.model import ConflictPolicy
+        from imgconv.model import ConflictPolicy
 
         window.out_dir = str(tmp_path / "out")
         window.max_mb = "2.5"
@@ -631,6 +631,43 @@ class TestConversionFlow:
         assert window.start_btn.isEnabled()
 
 
+class TestCompletionToast:
+    """完成 Toast 的体积分桶文案（BUG-001 回归）。
+
+    坑源：i18n.t 的首参名曾叫 `key`，而调用处用 `key=` 传模板变量
+    （`t("toast_dist_entry", key="1–5 MB", n=3)`）→ 位置参数与关键字参数
+    撞名，抛 `TypeError: t() got multiple values for argument 'key'`。
+    覆盖面广（只要输出目录能读到文件大小就必崩），完成提示直接不显示。
+    """
+
+    def test_t_accepts_key_as_template_variable(self):
+        from gui import i18n
+
+        # 不抛异常即为通过；再确认 {key} 真的被替换掉
+        text = i18n.t("toast_dist_entry", key="1–5 MB", n=3)
+        assert "1–5 MB" in text
+        assert "3" in text
+        assert "{key}" not in text and "{n}" not in text
+
+    def test_completion_toast_renders_size_buckets(self, window, tmp_path):
+        from imgconv.pipeline import ConversionReport, TaskResult
+
+        out = tmp_path / "big.tif"
+        out.write_bytes(b"\0" * (2 * 1024 * 1024))  # 2 MB → 落在「1–5 MB」桶
+        report = ConversionReport(
+            results=[
+                TaskResult(source=tmp_path / "fig.png", page=None, out_path=out, ok=True)
+            ]
+        )
+        window._last_output_dir = tmp_path
+
+        window._show_completion_toast(report)
+
+        assert not window.toast.isHidden(), "完成 Toast 必须弹出（窗口未 show）"
+        assert "1–5 MB" in window.toast._body.text()
+        assert str(tmp_path) in window.toast._body.text()
+
+
 class TestStatusAggregation:
     def test_same_name_in_different_folders_keeps_separate_status(self, qapp, window, tmp_path):
         """不同目录下的同名文件必须各显示各的状态，不能互相覆盖。"""
@@ -650,7 +687,7 @@ class TestStatusAggregation:
 
     def test_partial_failure_is_labeled(self, qapp, window, tmp_path):
         """多页源里只有部分页成功时，状态不能显示成「完成」。"""
-        from imgspec.model import ConflictPolicy
+        from imgconv.model import ConflictPolicy
 
         src = make_pdf(tmp_path / "doc.pdf", pages=3)
         out = tmp_path / "out"
@@ -1008,6 +1045,42 @@ class TestCheckSelectSync:
         )
 
 
+class TestBrandIcon:
+    """应用图标：「IMG / CONV 规格框」位图定稿（2026-10-11 起）。"""
+
+    def test_all_sizes_render(self, qapp):
+        from gui import theme
+
+        for size in (16, 20, 24, 32, 48, 64, 96, 128, 256):
+            pix = theme.icon_pixmap(size)
+            assert not pix.isNull()
+            assert (pix.width(), pix.height()) == (size, size)
+            img = pix.toImage()
+            step = max(1, size // 8)
+            assert any(
+                img.pixelColor(x, y).alpha() > 0
+                for x in range(0, size, step)
+                for y in range(0, size, step)
+            ), f"{size}px 图标全透明"
+
+    def test_tile_corners_leave_transparent(self, qapp):
+        """底板角外透明（图标惯例）：定稿位图经圆角蒙版处理后角外无残留。"""
+        from gui import theme
+
+        img = theme.icon_pixmap(256).toImage()
+        assert img.pixelColor(0, 0).alpha() == 0
+        assert img.pixelColor(255, 0).alpha() == 0
+        assert img.pixelColor(128, 128).alpha() > 0  # 中心是底板
+
+    def test_master_embedded_and_decodable(self, qapp):
+        """内嵌母版可解码：512px，窗口图标 / ico / 界面标记全部同源。"""
+        from gui import theme
+
+        master = theme._master_pixmap()
+        assert not master.isNull()
+        assert (master.width(), master.height()) == (512, 512)
+
+
 class TestCloseDuringConversion:
     def test_closing_while_running_is_safe(self, qapp, window, tmp_path):
         """转换过程中关窗，不能让 QThread 在运行中被销毁。"""
@@ -1193,6 +1266,64 @@ class TestMaintenanceFeatures:
         assert len(window._log_records) == before + 1
         assert window.toast._title.text() == i18n.t("update_failed_title")
         assert not window.toast.isHidden()
+
+
+class TestSettingsMigration:
+    """v1.x（imgspec）→ 2.0（imgconv）的偏好迁移。
+
+    改名换了 QSettings 的组织名/应用名，注册表键路径整个变了；不搬的话
+    老用户升级后窗口大小、主题、语言等偏好会悄悄回到默认值。
+    """
+
+    def test_migrates_when_target_is_empty(self, tmp_path):
+        from PySide6.QtCore import QSettings
+
+        from gui import main_window as mw
+
+        legacy = QSettings(str(tmp_path / "legacy.ini"), QSettings.Format.IniFormat)
+        legacy.setValue("lang", "en")
+        legacy.setValue("theme", "dark")
+        legacy.setValue("window/geometry", "keepme")
+        legacy.sync()
+
+        target = QSettings(str(tmp_path / "target.ini"), QSettings.Format.IniFormat)
+        moved = mw._migrate_legacy_settings(target, lambda: legacy)
+
+        assert moved == 3
+        assert target.value("lang") == "en"
+        assert target.value("theme") == "dark"
+        assert target.value("window/geometry") == "keepme"
+
+    def test_never_overwrites_values_written_after_upgrade(self, tmp_path):
+        from PySide6.QtCore import QSettings
+
+        from gui import main_window as mw
+
+        legacy = QSettings(str(tmp_path / "legacy.ini"), QSettings.Format.IniFormat)
+        legacy.setValue("lang", "en")
+        legacy.sync()
+
+        target = QSettings(str(tmp_path / "target.ini"), QSettings.Format.IniFormat)
+        target.setValue("lang", "zh")  # 用户在新版里已经改过
+        target.sync()
+
+        assert mw._migrate_legacy_settings(target, lambda: legacy) == 0
+        assert target.value("lang") == "zh"
+
+    def test_noop_without_legacy_settings(self, tmp_path):
+        from PySide6.QtCore import QSettings
+
+        from gui import main_window as mw
+
+        empty = QSettings(str(tmp_path / "empty.ini"), QSettings.Format.IniFormat)
+        target = QSettings(str(tmp_path / "target.ini"), QSettings.Format.IniFormat)
+        assert mw._migrate_legacy_settings(target, lambda: empty) == 0
+
+    def test_legacy_identity_is_imgspec(self):
+        from gui import main_window as mw
+
+        # 迁移源写死为 v1.x 的身份；改了这里就等于放弃老用户的设置
+        assert mw.LEGACY_SETTINGS == ("imgspec", "ImageSpecTool")
 
 
 class TestSessionLogFeatures:

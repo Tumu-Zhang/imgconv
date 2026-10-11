@@ -6,7 +6,7 @@
 "图像大小 + 另存为" 等价。
 """
 
-from imgspec.model import (
+from imgconv.model import (
     OutputFormat,
     OutputSpec,
     SizeMode,
@@ -24,4 +24,4 @@ __all__ = [
     "resolve_geometry",
 ]
 
-__version__ = "1.2.0"
+__version__ = "2.0.0"

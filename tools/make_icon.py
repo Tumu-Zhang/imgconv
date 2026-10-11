@@ -1,8 +1,8 @@
 """生成应用图标（icon.ico）。
 
-图标取自 gui/theme.icon_pixmap 的品牌标记：蓝色渐变圆角底 +
-白色相片卡（山与太阳）+ 青色裁切角标。界面运行时的窗口图标
-与打包 exe 的文件图标由同一个函数绘制，保证处处一致。
+各尺寸帧取自 gui/theme.icon_pixmap：内嵌品牌母版（设计定稿位图，
+见 tools/make_brand_master.py）的平滑缩放，与界面运行时的窗口图标
+同源，保证处处一致。
 
 用法：
     python tools/make_icon.py

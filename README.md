@@ -1,6 +1,6 @@
 # 图片转换器 —— 科研投稿图片规格化
 
-[![CI](https://github.com/Tumu-Zhang/imgspec/actions/workflows/ci.yml/badge.svg)](https://github.com/Tumu-Zhang/imgspec/actions/workflows/ci.yml)
+[![CI](https://github.com/Tumu-Zhang/imgconv/actions/workflows/ci.yml/badge.svg)](https://github.com/Tumu-Zhang/imgconv/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 
@@ -15,7 +15,7 @@ Batch-convert PPT/PPTX, PDF, SVG and raster images — GUI + CLI, Windows.
 **不做任何 AI 重绘或图像生成**，结果与 Photoshop 的「图像大小 + 另存为」等价，
 只是可以批量、可复现、可脚本化。
 
-**👉 [下载 Windows 绿色版（免安装，解压双击即用）](https://github.com/Tumu-Zhang/imgspec/releases/latest)👈**
+**👉 [下载 Windows 绿色版（免安装，解压双击即用）](https://github.com/Tumu-Zhang/imgconv/releases/latest)👈**
 
 | 浅色主题 | 深色主题 |
 |---|---|
@@ -27,8 +27,8 @@ Batch-convert PPT/PPTX, PDF, SVG and raster images — GUI + CLI, Windows.
 
 ### 方式一：下载绿色版（推荐，不需要装 Python）
 
-到 [**Releases**](https://github.com/Tumu-Zhang/imgspec/releases/latest) 下载
-`imgspec-v*-win64.zip`，解压后双击 **`图片转换器.exe`** 即可 —— 不用装 Python，
+到 [**Releases**](https://github.com/Tumu-Zhang/imgconv/releases/latest) 下载
+`imgconv-v*-win64.zip`，解压后双击 **`图片转换器.exe`** 即可 —— 不用装 Python，
 不用编译，解压就能用。
 
 这是一个绿色软件，整个文件夹可以拷到任何 Windows 电脑上用，
@@ -37,6 +37,10 @@ Batch-convert PPT/PPTX, PDF, SVG and raster images — GUI + CLI, Windows.
 > 要一起带走的是 `图片转换器.exe` 和同级的 `_internal\` 文件夹，两者缺一不可
 > （后者是运行库）。想放桌面的话，右键 exe → 发送到 → 桌面快捷方式即可。
 > 首次运行若被 SmartScreen 拦截：点「更多信息 → 仍要运行」（程序未做代码签名）。
+
+> **从 1.x 升级到 2.0**：软件英文名由 `imgspec` 统一为 **`imgconv`**（与图标上的
+> IMG / CONV 一致）。本地绿色版直接解压覆盖即可，偏好设置会自动迁移；**安装包用户
+> 需要先卸载 1.x 再装 2.0**（安装标识变了，两者会被系统当成不同应用）。
 
 ### 方式二：从源码运行（需要 Python 3.10+）
 
@@ -47,7 +51,7 @@ pip install -r requirements.txt
 python -m gui
 
 # 命令行（适合把规格固化进投稿流程）
-python -m imgspec figure.pdf --width 8.5 --unit cm --dpi 300 --format tiff
+python -m imgconv figure.pdf --width 8.5 --unit cm --dpi 300 --format tiff
 ```
 
 Windows 上也可以双击 `run_gui.bat`（会自动检查并安装依赖）。
@@ -57,7 +61,7 @@ Windows 上也可以双击 `run_gui.bat`（会自动检查并安装依赖）。
 打包版和源码版都支持一次真实的自检 —— 它会生成测试图、按规划转换、读回校验像素与 DPI：
 
 ```bash
-图片转换器.exe --selftest      # 源码方式：python -m imgspec.selftest
+图片转换器.exe --selftest      # 源码方式：python -m imgconv.selftest
 ```
 
 还可以把你手上任何一个文件交给它试跑一遍，确认这类文件能不能处理
@@ -67,7 +71,7 @@ Windows 上也可以双击 `run_gui.bat`（会自动检查并安装依赖）。
 图片转换器.exe --selftest "D:\论文\Figure1.pptx"
 ```
 
-结果同时写进 `%TEMP%\imgspec_selftest_report.txt`（双击运行的 exe 没有控制台，
+结果同时写进 `%TEMP%\imgconv_selftest_report.txt`（双击运行的 exe 没有控制台，
 所以以这个文件为准）。自检也会报告本机 PowerPoint 是否可用于转换幻灯片。
 
 ---
@@ -155,7 +159,7 @@ Windows 上也可以双击 `run_gui.bat`（会自动检查并安装依赖）。
 - **检查更新**：查一次 GitHub Releases 有没有新版本；右侧箭头菜单里可以关掉
   「启动时自动检查」（默认开启）。连不上网络时它会**静默跳过**，不弹错、不影响使用
 
-另外，**每次运行的日志都会在本机留档**（`%LOCALAPPDATA%\imgspec\图片转换器\logs\`）：
+另外，**每次运行的日志都会在本机留档**（`%LOCALAPPDATA%\imgconv\图片转换器\logs\`）：
 如果上次程序没有正常退出，下次启动会提示「上次异常退出」，可以直接导出那次的日志
 发给维护者。全程只写你自己的电脑，不上传任何数据。
 
@@ -253,7 +257,7 @@ PDF/PPT 里的图片是位图，不是矢量。导出的 PDF 页面在 600 dpi �
 ## 命令行
 
 ```
-python -m imgspec <文件或目录>... [选项]
+python -m imgconv <文件或目录>... [选项]
 
 尺寸（物理与像素二选一）
   --width / --height / --unit {mm,cm,inch}
@@ -284,13 +288,13 @@ python -m imgspec <文件或目录>... [选项]
 
 ```bash
 # 先看看会输出成什么，不写文件
-python -m imgspec *.pdf --width 8.5 --unit cm --dpi 300 --dry-run
+python -m imgconv *.pdf --width 8.5 --unit cm --dpi 300 --dry-run
 
 # 17 cm 宽、600 dpi、TIFF，单图不超过 10 MB
-python -m imgspec figures/ --width 170 --unit mm --dpi 600 --limit 10
+python -m imgconv figures/ --width 170 --unit mm --dpi 600 --limit 10
 
 # 幻灯片只要第 2 页，出 PNG
-python -m imgspec slides.pptx --px-width 2550 --dpi 300 --format png --pages 2
+python -m imgconv slides.pptx --px-width 2550 --dpi 300 --format png --pages 2
 ```
 
 ---
@@ -330,11 +334,12 @@ python -m imgspec slides.pptx --px-width 2550 --dpi 300 --format png --pages 2
 main.py            exe 与双击运行的入口（含 --selftest）
 gui/
   theme.py       调色板、字体、样式表、自绘应用图标
+  brand_paths.py IMG / CONV 字标轮廓（自动生成，勿手改）
   i18n.py        中英双语文案表
   widgets.py     可复用小组件（完成通知浮层、全选表头）
   main_window.py 拖拽、文件队列（勾选/页码）、参数栏、后台转换
   worker.py      后台转换线程
-imgspec/
+imgconv/
   model.py      输出规格与几何解析（尺寸、等比、单位换算）
   ingest.py     输入探测（类别、页数、源分辨率），不启动 Office
   office.py     PowerPoint 自动化（唯一依赖 Office 的模块）
@@ -345,6 +350,7 @@ imgspec/
   cli.py        命令行入口
 tools/
   make_icon.py        生成 icon.ico
+  make_brand_paths.py 从 Logo 矢量稿抽出字标轮廓 → gui/brand_paths.py
   build.py            一键打包（含依赖排除与收尾）
   make_installer.py   制作安装包（调用 Inno Setup）
 installer/
@@ -377,7 +383,7 @@ python tools\build.py
 python tools\make_release_zip.py
 ```
 
-产物在 `dist\release\imgspec-v<版本>-win64.zip`（版本号取自 `imgspec.__version__`，
+产物在 `dist\release\imgconv-v<版本>-win64.zip`（版本号取自 `imgconv.__version__`，
 与要打的 git tag 保持一致即可）。
 
 ## 制作安装包
@@ -430,7 +436,7 @@ python -m pytest tests/ -q
 
 ## 问题反馈
 
-遇到 bug 或有功能建议，欢迎到 [Issues](https://github.com/Tumu-Zhang/imgspec/issues) 提交 ——
+遇到 bug 或有功能建议，欢迎到 [Issues](https://github.com/Tumu-Zhang/imgconv/issues) 提交 ——
 软件顶栏的「反馈」按钮菜单里可以直接选 **GitHub Issue** 或 **邮件反馈**
 （imgspec@163.com，正文自动预填错误摘要）；「导出日志」能把本次会话的日志
 （含版本与系统信息）存成 txt 一并附上，问题定位会快很多。

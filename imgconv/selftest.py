@@ -8,7 +8,7 @@
 再加上 PowerPoint 可用性探测（缺了不算失败，只如实报告）。
 
 用法：
-    python -m imgspec.selftest
+    python -m imgconv.selftest
     图片转换器.exe --selftest
 """
 
@@ -19,8 +19,8 @@ import tempfile
 import traceback
 from pathlib import Path
 
-from imgspec.model import OutputFormat, OutputSpec, SizeMode, TiffCompression, Unit
-from imgspec.pipeline import convert
+from imgconv.model import OutputFormat, OutputSpec, SizeMode, TiffCompression, Unit
+from imgconv.pipeline import convert
 
 # 8.5 cm @ 300 dpi = 1003.94 px -> 1004；1000x800 的源按比例得到 803
 EXPECTED_PX = (1004, 803)
@@ -69,7 +69,7 @@ def run_selftest(
         if not passed:
             ok = False
 
-    base = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="imgspec_selftest_"))
+    base = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="imgconv_selftest_"))
     base.mkdir(parents=True, exist_ok=True)
     out_dir = base / "converted"
 
@@ -157,7 +157,7 @@ def run_selftest(
 
     # --- PowerPoint（缺了不算失败，如实报告）---------------------------
     try:
-        from imgspec import office
+        from imgconv import office
 
         available, note = office.is_available()
         lines.append(
@@ -220,7 +220,7 @@ def main() -> int:
 
     # 打包成 exe 后是 --windowed，标准输出可能不可用（sys.stdout 为 None），
     # 所以报告先落盘，再尝试往控制台打印。
-    target = Path(tempfile.gettempdir()) / "imgspec_selftest_report.txt"
+    target = Path(tempfile.gettempdir()) / "imgconv_selftest_report.txt"
     try:
         target.write_text(report, encoding="utf-8")
     except Exception:  # noqa: BLE001

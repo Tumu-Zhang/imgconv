@@ -147,20 +147,15 @@ class TestSelection:
         assert header.check_state == Qt.CheckState.Checked
         assert window.start_btn.isEnabled()
 
-    def test_start_blocked_without_checked(self, qapp, window, tmp_path, monkeypatch):
-        shown = {}
+    def test_start_blocked_without_checked(self, qapp, window, tmp_path):
+        """无勾选点「开始转换」走非模态提示（W42：不再弹模态框）。"""
+        from gui import i18n
 
-        def fake_info(*args, **kwargs):
-            shown["called"] = True
-
-        monkeypatch.setattr(
-            "gui.main_window.QMessageBox.information", fake_info, raising=False
-        )
         make_raster(tmp_path / "a.png", (100, 100))
         window.add_paths([tmp_path / "a.png"])
         window.table.item(0, COL_CHECK).setCheckState(Qt.CheckState.Unchecked)
         window._start()
-        assert shown.get("called")
+        assert i18n.t("msg_no_selection") in window.status_label.text()
         assert window._worker is None
 
 
@@ -1402,3 +1397,188 @@ class TestSessionLogFeatures:
         before = len(window._log_records)
         window.export_crash_log()  # 不应抛异常
         assert len(window._log_records) == before + 1
+
+
+class TestWeeklyW42:
+    """收集部 W42 建议队列落地：撤销条、拖放校验、键盘可达、对比度、减少动效。"""
+
+    # -- P1 撤销条 --------------------------------------------------------
+    def test_undo_restores_removed_row(self, window, tmp_path):
+        """移除 → Toast 撤销：行按原位置插回，行级尺寸参数一起还原。"""
+        make_raster(tmp_path / "a.png", (100, 100))
+        make_raster(tmp_path / "b.png", (100, 100))
+        window.add_paths([tmp_path / "a.png", tmp_path / "b.png"])
+        window.table.selectRow(1)
+        window.phys_width.setText("3")  # b 行专属参数 3cm
+        window.remove_selected()
+        assert window.table.rowCount() == 1
+        assert not window.toast.isHidden(), "移除必须弹撤销条"
+        assert window.toast._action_btn.isVisible() or not window.toast._action_btn.isHidden()
+
+        window.toast._invoke_action()
+        assert window.table.rowCount() == 2
+        assert window.table.item(1, COL_NAME).text() == "b.png"
+        assert (
+            window._size_params[str(tmp_path / "b.png")].phys_width == "3"
+        ), "撤销必须还原行级尺寸参数"
+        assert window.table.item(1, COL_CHECK).checkState() == Qt.CheckState.Checked
+
+    def test_undo_restores_after_clear_all(self, window, tmp_path):
+        """清空 → 撤销：整表回填且顺序不变。"""
+        make_raster(tmp_path / "a.png", (100, 100))
+        make_raster(tmp_path / "b.png", (100, 100))
+        window.add_paths([tmp_path / "a.png", tmp_path / "b.png"])
+        window.table.item(1, COL_CHECK).setCheckState(Qt.CheckState.Unchecked)
+        window.clear_all()
+        assert window.table.rowCount() == 0
+
+        window.toast._invoke_action()
+        assert window.table.rowCount() == 2
+        assert window.table.item(0, COL_NAME).text() == "a.png"
+        assert window.table.item(1, COL_CHECK).checkState() == Qt.CheckState.Unchecked
+
+    def test_undo_skipped_when_file_readded(self, window, tmp_path):
+        """移除后重新拖入同名文件：撤销不再重复恢复。"""
+        src = make_raster(tmp_path / "a.png", (100, 100))
+        window.add_paths([src])
+        window.table.selectRow(0)
+        window.remove_selected()
+        window.add_paths([src])          # 用户重新加入
+        window.toast._invoke_action()
+        assert window.table.rowCount() == 1
+
+    # -- P2 拖放校验 -------------------------------------------------------
+    def test_drag_filter_accepts_only_supported(self, window, tmp_path):
+        from PySide6.QtCore import QUrl
+
+        from gui.main_window import MainWindow
+
+        good = QUrl.fromLocalFile(str(tmp_path / "a.png"))
+        bad = QUrl.fromLocalFile(str(tmp_path / "note.txt"))
+        folder = QUrl.fromLocalFile(str(tmp_path))
+        assert MainWindow._drag_has_supported([good])
+        assert not MainWindow._drag_has_supported([bad])
+        assert MainWindow._drag_has_supported([bad, good])
+        assert MainWindow._drag_has_supported([folder]), "目录放行，落地再筛"
+
+    def test_skipped_files_summarized(self, window, tmp_path):
+        from gui import i18n
+
+        (tmp_path / "x.txt").write_text("nope", encoding="utf-8")
+        (tmp_path / "y.exe").write_bytes(b"MZ")
+        window.add_paths([tmp_path / "x.txt", tmp_path / "y.exe"])
+        assert i18n.t("log_skipped_summary", n=2) in window.log_view.toPlainText()
+
+    # -- P1 PillToggle 键盘可达 --------------------------------------------
+    def test_pilltoggle_keyboard_navigation(self, qapp):
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent
+
+        from gui.widgets import PillToggle
+
+        toggle = PillToggle()
+        toggle.addItem("浅色", "light")
+        toggle.addItem("深色", "dark")
+        toggle.setCurrentIndex(0)
+        seen = []
+        toggle.currentIndexChanged.connect(seen.append)
+
+        assert toggle.focusPolicy() == Qt.FocusPolicy.StrongFocus
+
+        def press(key):
+            toggle.keyPressEvent(
+                QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
+            )
+
+        press(Qt.Key.Key_Right)
+        assert toggle.currentData() == "dark"
+        press(Qt.Key.Key_Left)       # 退回第一项
+        assert toggle.currentData() == "light"
+        press(Qt.Key.Key_Space)      # 两项间拨动
+        assert toggle.currentData() == "dark"
+        assert seen == [1, 0, 1]
+
+    # -- P3 减少动效 --------------------------------------------------------
+    def test_reduce_motion_skips_pill_animation(self, qapp, monkeypatch):
+        from PySide6.QtCore import QPropertyAnimation
+
+        from gui import theme
+        from gui.widgets import PillToggle
+
+        theme.set_reduce_motion(True)
+        try:
+            toggle = PillToggle()
+            toggle.addItem("浅色", "light")
+            toggle.addItem("深色", "dark")
+            monkeypatch.setattr(toggle, "isVisible", lambda: True)
+            toggle.setCurrentIndex(1)
+            assert toggle._hl_x == toggle._seg_rect(1).x(), "应瞬时落位"
+            assert toggle._anim.state() != QPropertyAnimation.State.Running
+        finally:
+            theme.set_reduce_motion(False)
+
+    # -- P2 对比度 -----------------------------------------------------------
+    @staticmethod
+    def _contrast(fg: str, bg: str) -> float:
+        def lum(hexc: str) -> float:
+            r, g, b = (int(hexc[i : i + 2], 16) / 255 for i in (1, 3, 5))
+            f = lambda c: c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4  # noqa: E731
+            r, g, b = f(r), f(g), f(b)
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+        a, b = lum(fg), lum(bg)
+        hi, lo = max(a, b), min(a, b)
+        return (hi + 0.05) / (lo + 0.05)
+
+    def test_field_label_uses_secondary_in_both_themes(self, qapp):
+        from gui import theme
+
+        for name in ("light", "dark"):
+            t = theme.DARK if name == "dark" else theme.LIGHT
+            qss = theme.build_stylesheet(name)
+            start = qss.index("QLabel#fieldLabel")
+            block = qss[start : qss.index("}", start)]
+            assert f"color: {t.text_secondary};" in block
+            assert self._contrast(t.text_secondary, t.bg_secondary) >= 4.5
+
+    def test_border_input_meets_3_to_1(self, qapp):
+        from gui import theme
+
+        for name in ("light", "dark"):
+            t = theme.DARK if name == "dark" else theme.LIGHT
+            assert self._contrast(t.border_input, t.bg_secondary) >= 3.0, name
+
+    # -- P3 惯例键位与语义 ----------------------------------------------------
+    def test_remove_action_has_delete_shortcut(self, window):
+        from PySide6.QtGui import QKeySequence
+
+        from gui import i18n
+
+        action = window._remove_action
+        assert action.text() == i18n.t("remove_selected")
+        assert action.shortcut() == QKeySequence(
+            QKeySequence.StandardKey.Delete
+        )
+
+    def test_add_button_has_ctrl_o_shortcut(self, window):
+        from PySide6.QtGui import QKeySequence
+
+        assert window.add_btn.shortcut() == QKeySequence("Ctrl+O")
+
+    def test_toast_close_has_accessible_name(self, window):
+        from gui import i18n
+
+        assert window.toast._close_btn.accessibleName() == i18n.t("toast_close")
+
+    def test_pill_toggles_have_accessible_names(self, window):
+        from gui import i18n
+
+        assert window.lang_combo.accessibleName() == i18n.t("lang_combo_tooltip")
+        assert window.theme_combo.accessibleName() == i18n.t("theme_combo_tooltip")
+
+    def test_name_hint_label_always_visible(self, window):
+        """命名模板变量说明常显（feedback-008），不再只藏 tooltip。"""
+        from gui import i18n
+
+        assert not window.name_hint_label.isHidden()
+        assert i18n.t("name_hint") in window.name_hint_label.text()

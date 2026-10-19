@@ -132,6 +132,9 @@ class Theme:
     # 边框
     border: str
     border_strong: str
+    # 输入控件专用边框：输入框与卡片同底色，边框是唯一边界，
+    # 必须单独满足 WCAG 1.4.11 的 3:1（浅 3.50 / 深 3.43，2026-W42 实算）
+    border_input: str
 
     # 文字
     text_primary: str
@@ -172,6 +175,7 @@ LIGHT = Theme(
     bg_sunk="#e7ebf0",
     border="#e2e7ee",
     border_strong="#c4cdd9",
+    border_input="#7f8a99",
     text_primary="#1b2330",
     text_secondary="#5a6572",
     text_tertiary="#8b95a3",
@@ -204,6 +208,7 @@ DARK = Theme(
     bg_sunk="#121417",
     border="#33383f",
     border_strong="#4a525e",
+    border_input="#6f7883",
     text_primary="#eef1f5",
     text_secondary="#b7bfc9",
     text_tertiary="#7d8590",
@@ -241,6 +246,27 @@ def set_theme(name: str) -> None:
 def current_theme() -> Theme:
     """返回当前生效的主题实例。"""
     return DARK if _current_theme_name == "dark" else LIGHT
+
+
+# ----------------------------------------------------------------------
+# 系统级「减少动效」（Reduce Motion）
+# ----------------------------------------------------------------------
+# Windows 的客户端区动画偏好（设置 > 辅助功能 > 视觉效果）由 app.py 启动时
+# 经 ctypes SystemParametersInfo 查询后注入；开启时位移类动效（PillToggle
+# 高亮滑动等）降级为瞬时切换。reg.exe 被安全策略禁用，故不走注册表直读。
+
+_reduce_motion: bool = False
+
+
+def set_reduce_motion(value: bool) -> None:
+    """记录系统「减少动效」偏好（app.py 启动时调用一次）。"""
+    global _reduce_motion
+    _reduce_motion = bool(value)
+
+
+def reduce_motion() -> bool:
+    """当前是否应减少动效。"""
+    return _reduce_motion
 
 
 def strip_palette() -> tuple[str, str, str]:
@@ -468,10 +494,19 @@ QGroupBox::title {{
     /* 字号/字重由 QGroupBox 本体负责（见上），这里只管颜色与定位 */
 }}
 
-/* 字段标签：9pt 更淡的三级灰，与输入内容（10pt 主色）明确分层 */
+/* 字段标签：9pt 二级灰 —— 原三级灰浅色仅 3.03:1、深色 4.12:1，
+   双主题都过不了 WCAG 1.4.11 的 4.5:1（2026-W42 实算）；
+   换二级灰后浅 5.93:1 / 深 8.27:1 达标 */
 QLabel#fieldLabel {{
     background: transparent;
-    color: {t.text_tertiary};
+    color: {t.text_secondary};
+    font-size: {FONT_SM}pt;
+}}
+
+/* 字段下的常显小字（命名模板变量说明等）：任务必需的说明不能只藏在 tooltip */
+QLabel#fieldHint {{
+    background: transparent;
+    color: {t.text_secondary};
     font-size: {FONT_SM}pt;
 }}
 
@@ -561,10 +596,12 @@ QPushButton#danger:hover {{
     color: {t.text_inverse};
 }}
 
-/* ---------- 输入控件：聚焦光环（整圈描边加粗）是现代表单的标准反馈 ---------- */
+/* ---------- 输入控件：聚焦光环（整圈描边加粗）是现代表单的标准反馈 ----------
+   边框用专用 border_input（双主题对输入框底色 ≥3:1）；hover 提到二级文字色，
+   比 base 更深一档，反馈方向正确 */
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
     background: {t.bg_secondary};
-    border: 1px solid {t.border_strong};
+    border: 1px solid {t.border_input};
     border-radius: {RADIUS_CTRL}px;
     padding: 6px 10px;
     color: {t.text_primary};
@@ -573,7 +610,7 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
     min-height: 20px;
 }}
 QLineEdit:hover, QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover {{
-    border-color: {t.text_tertiary};
+    border-color: {t.text_secondary};
     background: {t.bg_tertiary};
 }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{

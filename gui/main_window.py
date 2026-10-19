@@ -46,7 +46,6 @@ from PySide6.QtGui import (
     QDragEnterEvent,
     QDropEvent,
     QKeySequence,
-    QShortcut,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -373,6 +372,7 @@ class MainWindow(QMainWindow):
         self.lang_combo.addItem(i18n.t("lang_short_en"), "en")
         self.lang_combo.setCurrentIndex(0 if i18n.current_lang() == "zh" else 1)
         self.lang_combo.setToolTip(i18n.t("lang_combo_tooltip"))
+        self.lang_combo.setAccessibleName(i18n.t("lang_combo_tooltip"))
         self.lang_combo.currentIndexChanged.connect(self._on_lang_combo_changed)
 
         self.theme_combo = PillToggle()
@@ -382,6 +382,7 @@ class MainWindow(QMainWindow):
             0 if theme.current_theme().name == "light" else 1
         )
         self.theme_combo.setToolTip(i18n.t("theme_combo_tooltip"))
+        self.theme_combo.setAccessibleName(i18n.t("theme_combo_tooltip"))
         self.theme_combo.currentIndexChanged.connect(self._on_theme_combo_changed)
 
         layout.addWidget(self.lang_combo)
@@ -522,6 +523,8 @@ class MainWindow(QMainWindow):
         buttons = QHBoxLayout()
         self.add_btn = QPushButton(i18n.t("add_files"))
         self.add_btn.setToolTip(i18n.t("drop_sub"))
+        # Ctrl+O：标准「打开」键位（a11y-007 / flow-006 按惯例做）
+        self.add_btn.setShortcut(QKeySequence.StandardKey.Open)
         self.add_btn.clicked.connect(self._choose_files)
         buttons.addWidget(self.add_btn)
         self.remove_btn = QPushButton(i18n.t("remove_selected"))
@@ -538,10 +541,27 @@ class MainWindow(QMainWindow):
         buttons.addWidget(self.count_label)
         body.addLayout(buttons)
 
+        # 页码列常显提示（feedback-008：任务必需的说明不能只藏 tooltip）
+        self.pages_hint_label = QLabel(i18n.t("pages_hint"))
+        self.pages_hint_label.setObjectName("fieldHint")
+        self.pages_hint_label.setWordWrap(True)
+        body.addWidget(self.pages_hint_label)
+
         root.addLayout(body)
 
-        shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Delete), self.table)
-        shortcut.activated.connect(self.remove_selected)
+        # Delete 键移除：用挂在表格上的持久 QAction 而非 QShortcut ——
+        # 右键菜单复用同一个 action，快捷键 Del 自然显示在菜单右侧
+        # （a11y-007：标准键位 + 快捷键在菜单里可见）
+        self._remove_action = QAction(i18n.t("remove_selected"), self.table)
+        self._remove_action.setShortcut(QKeySequence.StandardKey.Delete)
+        # 快捷键只在表格（及其子树）内生效：否则在右栏输入框里按 Delete
+        # 删文字也会触发移除 —— WidgetWithChildrenShortcut 与旧 QShortcut
+        # 的生效范围完全一致
+        self._remove_action.setShortcutContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self._remove_action.triggered.connect(self.remove_selected)
+        self.table.addAction(self._remove_action)
         return card
 
     def _install_table_header(self) -> None:
@@ -846,7 +866,17 @@ class MainWindow(QMainWindow):
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("{stem}")
         self.name_edit.setToolTip(i18n.t("name_tooltip"))
-        self._add_row(form, "label_name_template", self.name_edit)
+        # 变量说明常显一行小字（feedback-008）：完整对照表保留在 tooltip，
+        # 高频的两个变量直接摆在字段旁边，不用悬停也能看到
+        self.name_hint_label = QLabel(i18n.t("name_hint"))
+        self.name_hint_label.setObjectName("fieldHint")
+        self.name_hint_label.setWordWrap(True)
+        name_col = QVBoxLayout()
+        name_col.setContentsMargins(0, 0, 0, 0)
+        name_col.setSpacing(theme.SPACE_XS)
+        name_col.addWidget(self.name_edit)
+        name_col.addWidget(self.name_hint_label)
+        self._add_row(form, "label_name_template", name_col)
 
         self.conflict_combo = QComboBox()
         for policy, key in (
@@ -987,6 +1017,8 @@ class MainWindow(QMainWindow):
         self._retranslate_combo(self.theme_combo, ("theme_light", "theme_dark"))
         self.lang_combo.setToolTip(i18n.t("lang_combo_tooltip"))
         self.theme_combo.setToolTip(i18n.t("theme_combo_tooltip"))
+        self.lang_combo.setAccessibleName(i18n.t("lang_combo_tooltip"))
+        self.theme_combo.setAccessibleName(i18n.t("theme_combo_tooltip"))
 
         # 顶栏维护功能按钮
         self.export_log_btn.setText(i18n.t("btn_export_log"))
@@ -1016,6 +1048,7 @@ class MainWindow(QMainWindow):
         self.add_btn.setToolTip(i18n.t("drop_sub"))
         self.remove_btn.setText(i18n.t("remove_selected"))
         self.remove_btn.setToolTip(i18n.t("remove_selected_tooltip"))
+        self._remove_action.setText(i18n.t("remove_selected"))
         self.clear_btn.setText(i18n.t("clear_all"))
         self.clear_btn.setToolTip(i18n.t("clear_all_tooltip"))
 
@@ -1053,6 +1086,8 @@ class MainWindow(QMainWindow):
         self.out_edit.setPlaceholderText(i18n.t("out_placeholder"))
         self.out_edit.setToolTip(i18n.t("out_dir_tooltip"))
         self.name_edit.setToolTip(i18n.t("name_tooltip"))
+        self.name_hint_label.setText(i18n.t("name_hint"))
+        self.pages_hint_label.setText(i18n.t("pages_hint"))
         self.browse_btn.setText(i18n.t("browse"))
 
         # 动作区
@@ -1131,9 +1166,7 @@ class MainWindow(QMainWindow):
 
         menu.addSeparator()
 
-        remove_action = QAction(i18n.t("remove_selected"), self)
-        remove_action.triggered.connect(self.remove_selected)
-        menu.addAction(remove_action)
+        menu.addAction(self._remove_action)
 
         menu.exec(QCursor.pos())
 
@@ -1149,9 +1182,25 @@ class MainWindow(QMainWindow):
     # 拖拽与文件列表
     # ==================================================================
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802 - Qt 命名
-        if event.mimeData().hasUrls():
+        # 悬停即校验类型（feedback-003）：含任一可处理文件（或目录）才高亮
+        # 「能放」；全部无效则沉默拒绝 —— 「看起来能放却放不进去」比
+        # 「看起来不能放」伤害大
+        if event.mimeData().hasUrls() and self._drag_has_supported(
+            event.mimeData().urls()
+        ):
             self._set_drop_active(True)
             event.acceptProposedAction()
+
+    @staticmethod
+    def _drag_has_supported(urls) -> bool:
+        """拖拽内容里是否至少有一个可处理的文件（目录视为可处理，落地再筛）。"""
+        for url in urls:
+            if not url.isLocalFile():
+                continue
+            path = Path(url.toLocalFile())
+            if path.is_dir() or path.suffix.lower() in SUPPORTED_SUFFIXES:
+                return True
+        return False
 
     def dragLeaveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         self._set_drop_active(False)
@@ -1170,13 +1219,27 @@ class MainWindow(QMainWindow):
         self.drop_hint.style().polish(self.drop_hint)
 
     def add_paths(self, paths: list[Path]) -> None:
-        added = 0
+        # 先分拣再入队：跳过汇总打在逐条明细前面（copy-003：先汇总再展开）
+        candidates: list[Path] = []
+        skipped = 0
         for path in paths:
             if path.is_dir():
                 for child in sorted(path.rglob("*")):
-                    if child.is_file() and self._add_file(child):
-                        added += 1
-            elif self._add_file(path):
+                    if not child.is_file():
+                        continue
+                    if child.suffix.lower() in SUPPORTED_SUFFIXES:
+                        candidates.append(child)
+                    else:
+                        skipped += 1
+            elif path.suffix.lower() in SUPPORTED_SUFFIXES:
+                candidates.append(path)
+            else:
+                skipped += 1
+        if skipped:
+            self._append_log("log_skipped_summary", "warn", n=skipped)
+        added = 0
+        for path in candidates:
+            if self._add_file(path):
                 added += 1
         if added:
             self._append_log("log_added", "info", n=added)
@@ -1314,14 +1377,48 @@ class MainWindow(QMainWindow):
         finally:
             self._loading_rows = False
 
+    def _snapshot_row(self, row: int) -> dict:
+        """移除前抓一行快照：路径、源信息、行级尺寸参数、页码覆盖、勾选态。
+
+        撤销时按原 index 插回这些内容 —— 行级尺寸参数是用户逐行调出来的，
+        误触移除若连带丢掉参数，就是全应用唯一「无法回头」的路径。
+        """
+        path = self._rows[row]
+        key = str(path)
+        pages_item = self.table.item(row, COL_PAGES)
+        pages_editable = bool(
+            pages_item is not None and pages_item.flags() & Qt.ItemFlag.ItemIsEditable
+        )
+        check_item = self.table.item(row, COL_CHECK)
+        return {
+            "index": row,
+            "path": path,
+            "info": self._sources.get(key),
+            "params": self._size_params.get(key),
+            "pages": (
+                pages_item.data(Qt.ItemDataRole.UserRole) or ""
+                if pages_editable
+                else None
+            ),
+            "checked": bool(
+                check_item is not None
+                and check_item.checkState() == Qt.CheckState.Checked
+            ),
+        }
+
     def remove_selected(self) -> None:
         """移除操作目标：优先移除选中行；没有选中时回退到已勾选的行。
 
         与「勾选 → 选中」联动配合，保证勾了就能移除、点了也能移除。
+        移除不是终局：Toast 带「撤销」按钮，6 秒内可把行按原位置插回
+        （feedback-002：可撤销 > 可确认）。
         """
         rows = sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True)
         if not rows:
             rows = sorted(self._checked_rows(), reverse=True)
+        if not rows:
+            return
+        snapshot = [self._snapshot_row(row) for row in rows]
         for row in rows:
             path = self._rows.pop(row)
             self._sources.pop(str(path), None)
@@ -1332,8 +1429,10 @@ class MainWindow(QMainWindow):
         if self._selected_row() is None:
             self._load_row_into_panel(None)
         self._refresh_preview()
+        self._show_undo_toast(i18n.t("toast_removed", n=len(snapshot)), snapshot)
 
     def clear_all(self) -> None:
+        snapshot = [self._snapshot_row(row) for row in range(len(self._rows))]
         self._rows.clear()
         self._sources.clear()
         self._size_params.clear()
@@ -1344,6 +1443,69 @@ class MainWindow(QMainWindow):
         self.open_dir_btn.setEnabled(False)
         self._status_summary = None
         self._load_row_into_panel(None)
+        self._refresh_preview()
+        if snapshot:
+            self._show_undo_toast(i18n.t("toast_cleared", n=len(snapshot)), snapshot)
+
+    def _show_undo_toast(self, title: str, snapshot: list[dict]) -> None:
+        """撤销条：一次一条、限时消失（feedback-002/006）。"""
+        if self._busy:
+            # 转换中的队列快照会失真（行号与线程正在转换的文件对不上），
+            # 不提供撤销；转换期间移除按钮本就已禁用
+            return
+        self.toast.show_message(
+            title,
+            "",
+            level="ok",
+            action_text=i18n.t("undo"),
+            on_action=lambda: self._restore_rows(snapshot),
+            auto_close_ms=6000,
+        )
+
+    def _restore_rows(self, snapshot: list[dict]) -> None:
+        """撤销移除/清空：把行按原 index 插回，连同源信息、行级参数、
+        页码覆盖与勾选态一起还原。转换进行中或无可恢复项时不动。"""
+        if self._busy or not snapshot:
+            return
+        self.toast.dismiss()
+        restored = 0
+        for entry in sorted(snapshot, key=lambda item: item["index"]):
+            path = entry["path"]
+            key = str(path)
+            if key in self._sources:
+                continue  # 用户已重新加入同名文件，不重复恢复
+            info = entry["info"]
+            if info is None:
+                info = ingest.probe(path)
+            row = min(entry["index"], len(self._rows))
+            self._rows.insert(row, path)
+            self._sources[key] = info
+            if entry["params"] is not None:
+                self._size_params[key] = entry["params"]
+            self.table.insertRow(row)
+            self._populate_row(row, path, info)
+            if entry["pages"] is not None:
+                pages_item = self.table.item(row, COL_PAGES)
+                self._loading_rows = True
+                try:
+                    pages_item.setText(entry["pages"] or i18n.t("pages_all"))
+                finally:
+                    self._loading_rows = False
+                pages_item.setData(Qt.ItemDataRole.UserRole, entry["pages"])
+            check_item = self.table.item(row, COL_CHECK)
+            self._loading_rows = True
+            try:
+                check_item.setCheckState(
+                    Qt.CheckState.Checked
+                    if entry["checked"]
+                    else Qt.CheckState.Unchecked
+                )
+            finally:
+                self._loading_rows = False
+            restored += 1
+        if not restored:
+            return
+        self._renumber_rows()
         self._refresh_preview()
 
     # ------------------------------------------------------------------
@@ -1517,6 +1679,8 @@ class MainWindow(QMainWindow):
         has_rows = len(self._rows) > 0
         self.empty_state.setVisible(not has_rows)
         self.table.setVisible(has_rows)
+        # 页码列提示只对存在的行有意义，与表格同进退
+        self.pages_hint_label.setVisible(has_rows)
 
     # ==================================================================
     # 规格与预览
@@ -1938,11 +2102,10 @@ class MainWindow(QMainWindow):
     def _start(self) -> None:
         files = self._checked_paths()
         if not files:
-            QMessageBox.information(
-                self,
-                i18n.t("msg_no_selection_title"),
-                i18n.t("msg_no_selection"),
-            )
+            # 可自行恢复的轻提示走非模态（flow-005）：状态栏 + 日志，
+            # 不再弹模态框收一次打断税
+            self._append_log("msg_no_selection", "warn")
+            self.status_label.setText(i18n.t("msg_no_selection"))
             return
         self._run_conversion(files)
 

@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui import theme
+from gui import i18n, theme
 
 
 class EdgeFade(QWidget):
@@ -259,6 +259,11 @@ class PillToggle(QWidget):
     交互：点击任意一侧直接选中（两项时等于拨动开关），
     高亮块以 160ms OutCubic 滑过去 —— 切换有明确的「确认感」。
 
+    键盘（a11y-001：所有交互元素 Tab 可达）：
+    - StrongFocus：Tab 进入，焦点态在 paintEvent 里画 accent 焦点环；
+    - ←/→ 在分段间移动选中，空格/回车在两项之间拨动；
+    - 系统开启「减少动效」时滑动动画降级为瞬时落位（theme.reduce_motion）。
+
     API 与 QComboBox 的最小常用子集兼容（addItem/findData/setCurrentIndex/
     currentData/currentText/count/setItemText/currentIndexChanged），
     调用方与测试无需感知控件类型差异。
@@ -279,6 +284,8 @@ class PillToggle(QWidget):
         self._hl_x = float(self.PAD)
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        # 键盘可达：裸 QWidget 默认 NoFocus，Tab 根本进不来（a11y-001）
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setFixedHeight(self.HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._anim = QPropertyAnimation(self, b"highlightPos", self)
@@ -357,8 +364,13 @@ class PillToggle(QWidget):
             return
         self._current = index
         target = self._seg_rect(index).x()
-        # 动画只在外部赋值（非初始化）时播放；初始化直接落位
-        if self._anim is not None and self.isVisible():
+        # 动画只在外部赋值（非初始化）时播放；初始化直接落位。
+        # 系统开启「减少动效」时跳过滑动，高亮块瞬时落位（a11y-006）
+        if (
+            self._anim is not None
+            and self.isVisible()
+            and not theme.reduce_motion()
+        ):
             self._anim.stop()
             self._anim.setStartValue(self._hl_x)
             self._anim.setEndValue(target)
@@ -379,6 +391,25 @@ class PillToggle(QWidget):
     highlightPos = Property(float, _get_highlight_pos, _set_highlight_pos)
 
     # -- 事件 ---------------------------------------------------------------
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        """键盘切换（a11y-001）：←/→ 移动分段，空格/回车在两项间拨动。"""
+        if self.isEnabled() and self._texts:
+            key = event.key()
+            if key == Qt.Key.Key_Left and self._current > 0:
+                self.setCurrentIndex(self._current - 1)
+                event.accept()
+                return
+            if key == Qt.Key.Key_Right and self._current < len(self._texts) - 1:
+                self.setCurrentIndex(self._current + 1)
+                event.accept()
+                return
+            if key in (Qt.Key.Key_Space, Qt.Key.Key_Enter, Qt.Key.Key_Return):
+                if len(self._texts) == 2:
+                    self.setCurrentIndex(1 - self._current)
+                    event.accept()
+                    return
+        super().keyPressEvent(event)
+
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and self.isEnabled():
             index = self._segment_at(event.position().x())
@@ -412,6 +443,15 @@ class PillToggle(QWidget):
             painter.setPen(QPen(QColor(t.border), 1.0))
             painter.setBrush(QColor(t.bg_secondary))
             painter.drawRoundedRect(track, radius, radius)
+
+            # 键盘焦点环（a11y-001：焦点环只能换样式不能删）：
+            # 紧贴轨道的 2px accent 描边，与悬停/选中视觉不冲突
+            if self.hasFocus():
+                painter.setPen(QPen(QColor(t.accent_line), 2.0))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRoundedRect(
+                    track.adjusted(-0.5, -0.5, 0.5, 0.5), radius, radius
+                )
 
             enabled = self.isEnabled()
             seg = self._seg_width()
@@ -493,6 +533,9 @@ class ToastNotification(QFrame):
         self._close_btn = QPushButton("×")
         self._close_btn.setObjectName("toastClose")
         self._close_btn.setFixedSize(24, 24)
+        # 只有 "×" 一个字形，读屏念不出含义 —— accessibleName 补语义
+        # （a11y-003：符号按钮必须补 accessibleName）
+        self._close_btn.setAccessibleName(i18n.t("toast_close"))
         self._close_btn.clicked.connect(self.dismiss)
 
         self._action_btn = QPushButton()
@@ -583,8 +626,9 @@ class ToastNotification(QFrame):
             self._action_callback()
 
     def retranslate(self, close_tooltip: str) -> None:
-        """语言切换时刷新固定文案（关闭按钮的悬浮提示）。"""
+        """语言切换时刷新固定文案（关闭按钮的悬浮提示与读屏名称）。"""
         self._close_btn.setToolTip(close_tooltip)
+        self._close_btn.setAccessibleName(close_tooltip)
 
     # ------------------------------------------------------------------
     # 定位：主窗口右下角，跟随窗口尺寸变化

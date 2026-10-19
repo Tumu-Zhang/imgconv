@@ -38,6 +38,9 @@ _STRINGS: dict[str, dict[str, str]] = {
     "theme_light": {"zh": "浅色", "en": "Light"},
     "theme_dark": {"zh": "深色", "en": "Dark"},
     "remove_selected": {"zh": "移除选中", "en": "Remove Selected"},
+    "toast_removed": {"zh": "已移除 {n} 个文件", "en": "Removed {n} file(s)"},
+    "toast_cleared": {"zh": "已清空列表（{n} 个文件）", "en": "Cleared {n} file(s)"},
+    "undo": {"zh": "撤销", "en": "Undo"},
     "remove_selected_tooltip": {
         "zh": "将选中的文件从处理列表移除；未选中时移除已勾选的文件（不会删除源文件）",
         "en": "Remove the selected files; if none are selected, remove the checked ones (source files are kept)",
@@ -278,6 +281,14 @@ _STRINGS: dict[str, dict[str, str]] = {
     },
     "browse": {"zh": "浏览…", "en": "Browse…"},
     "label_name_template": {"zh": "命名模板", "en": "Name Template"},
+    "name_hint": {
+        "zh": "可用变量：{stem} 源文件名 · {page} 页号（{index} 同 {page}）",
+        "en": "Variables: {stem} source name · {page} page number",
+    },
+    "pages_hint": {
+        "zh": "页码列：单击可编辑，如 1,3-5；留空 = 全部页（仅 PDF / PPT）",
+        "en": "Pages: click to edit, e.g. 1,3-5; empty = all (PDF / PPT only)",
+    },
     "name_tooltip": {
         "zh": "输出文件名（不含扩展名），可用变量：\n  {stem}   源文件名\n  {page}   页号，多页文档用\n  {index}  同 {page}\n例：{stem}_300dpi",
         "en": "Output file name (without extension). Variables:\n  {stem}   source file name\n  {page}   page number, multi-page documents\n  {index}  same as {page}\nExample: {stem}_300dpi",
@@ -324,6 +335,10 @@ _STRINGS: dict[str, dict[str, str]] = {
     },
     "log_added": {"zh": "已加入 {n} 个文件", "en": "Added {n} file(s)"},
     "log_skipped": {"zh": "跳过不支持的文件：{name}", "en": "Skipped unsupported file: {name}"},
+    "log_skipped_summary": {
+        "zh": "跳过 {n} 个不支持的文件",
+        "en": "Skipped {n} unsupported file(s)",
+    },
     "log_done_item": {"zh": "完成：{name}{page} → {out}", "en": "Done: {name}{page} → {out}"},
     "log_page_suffix": {"zh": "（第 {page} 页）", "en": " (page {page})"},
     "log_failed_item": {"zh": "失败：{name} — {error}", "en": "Failed: {name} — {error}"},

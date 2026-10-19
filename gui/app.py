@@ -20,6 +20,25 @@ def _detect_system_theme() -> str:
         return "light"
 
 
+# SPI_GETCLIENTAREAANIMATION：查询「客户端区动画」偏好（设置 > 辅助功能）。
+# 返回值非零表示用户允许动画；关闭 = 用户要求减少动效，界面动效降级。
+_SPI_GETCLIENTAREAANIMATION = 0x1042
+
+
+def _reduce_motion_enabled() -> bool:
+    """系统是否开启了「减少动效」；查询失败一律按未开启处理。"""
+    try:
+        import ctypes
+
+        enabled = ctypes.c_bool(True)
+        ok = ctypes.windll.user32.SystemParametersInfoW(
+            _SPI_GETCLIENTAREAANIMATION, 0, ctypes.byref(enabled), 0
+        )
+        return bool(ok) and not enabled.value
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
@@ -40,6 +59,9 @@ def main(argv: list[str] | None = None) -> int:
         theme.set_theme("light")
     else:
         theme.set_theme(_detect_system_theme())
+
+    # 系统开启「减少动效」时，界面动效（PillToggle 滑动等）降级为瞬时切换
+    theme.set_reduce_motion(_reduce_motion_enabled())
 
     # Fusion 打底再叠自定义样式表：Windows 原生样式对 QSS 的支持不完整
     app.setStyle("Fusion")

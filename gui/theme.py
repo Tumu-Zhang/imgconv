@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 
-from PySide6.QtCore import QByteArray, Qt
+from PySide6.QtCore import QByteArray, QEasingCurve, Qt
 from PySide6.QtGui import (
     QFont,
     QFontDatabase,
@@ -40,16 +40,33 @@ SPACE_XL = 24
 SPACE_2XL = 32
 
 # ----------------------------------------------------------------------
-# 圆角：卡片 12px、控件 7px —— 现代产品的「圆润丝滑」基调
+# 圆角：三档制（见 .claude/skills/desktop-ui-craft/references/style.md INV-05）
+# 卡片 8 / 控件 6 / 微型 4 —— 由原 12/7 收敛而来：更小的圆角读起来像仪器，
+# 而不是消费级 App。禁止出现第四档；圆形（单选、进度条胶囊）半径取半高，
+# 条形端点固定 2px，这两个不算档位。
 # ----------------------------------------------------------------------
-RADIUS_CARD = 12
-RADIUS_CTRL = 7
+RADIUS_CARD = 8
+RADIUS_CTRL = 6
+RADIUS_MICRO = 4
+
+# ----------------------------------------------------------------------
+# 动效：时长与曲线全应用只此一份（UI-017）
+# ----------------------------------------------------------------------
+# 口径（motion 规律库）：进入 150–200ms、退出略短于进入、位置/尺寸变化
+# 用 Out 系（先快后慢，落点稳）。任何新的过渡都应引用这里的常量，
+# 不要在各控件里写裸数字 —— 否则「减少动效」降级时无法统一收敛。
+ANIM_FAST_MS = 120   # 退出、微反馈
+ANIM_BASE_MS = 160   # 组件状态切换（胶囊滑动、行显隐）
+ANIM_SLOW_MS = 200   # 大块浮层进入（Toast）
+ANIM_EASE_OUT = QEasingCurve.Type.OutCubic
+ANIM_EASE_IN_OUT = QEasingCurve.Type.InOutCubic
 
 # ----------------------------------------------------------------------
 # 字号阶梯
 # ----------------------------------------------------------------------
+FONT_3XL = 18   # 仅用于规格仪表盘主读数（S1），别处不得使用
 FONT_2XL = 16  # 应用标题
-FONT_XL = 13   # 规格条主读数
+FONT_XL = 13   # 规格条次行、区块主标题
 FONT_LG = 11   # 卡片/分组标题
 FONT_MD = 10   # 正文、标签、输入框、按钮
 FONT_SM = 9    # 次要信息：表头、日志、计数、状态、提示
@@ -180,20 +197,21 @@ LIGHT = Theme(
     text_secondary="#5a6572",
     text_tertiary="#8b95a3",
     text_inverse="#ffffff",
-    accent="#2563eb",
-    accent_hover="#1d4ed8",
-    accent_pressed="#1e40af",
-    accent_wash="#e7eefe",
-    accent_line="#2563eb",
-    accent_hi="#4f86f7",
+    # 钢蓝：比默认蓝更冷更沉，读起来像仪表刻度而不是网页按钮（style.md 四）
+    accent="#2e5c8a",
+    accent_hover="#3a6b9c",
+    accent_pressed="#1f4265",
+    accent_wash="#eaf0f7",
+    accent_line="#2e5c8a",
+    accent_hi="#3a6b9c",
     success="#15803d",
     success_wash="#e0f5e8",
     warning="#b45309",
     warning_wash="#fdf1d7",
     danger="#dc2626",
     danger_wash="#fde8e8",
-    info="#2563eb",
-    info_wash="#e7eefe",
+    info="#2e5c8a",
+    info_wash="#eaf0f7",
     strip="#161c26",
     strip_ink="#f5f7fa",
     strip_ink_soft="#9aa5b1",
@@ -213,20 +231,20 @@ DARK = Theme(
     text_secondary="#b7bfc9",
     text_tertiary="#7d8590",
     text_inverse="#10131a",
-    accent="#5b8cff",
-    accent_hover="#7ba3ff",
-    accent_pressed="#96b4ff",
-    accent_wash="#1c2f57",
-    accent_line="#5b8cff",
-    accent_hi="#7ba3ff",
+    accent="#5f8db8",
+    accent_hover="#6f9cc6",
+    accent_pressed="#7fadde",
+    accent_wash="#1b3049",
+    accent_line="#5f8db8",
+    accent_hi="#6f9cc6",
     success="#4ade80",
     success_wash="#14331d",
     warning="#f0c451",
     warning_wash="#3a3312",
     danger="#f98a94",
     danger_wash="#3d1d1f",
-    info="#5b8cff",
-    info_wash="#1c2f57",
+    info="#5f8db8",
+    info_wash="#1b3049",
     strip="#101216",
     strip_ink="#eef1f5",
     strip_ink_soft="#7d8590",
@@ -416,12 +434,18 @@ QLabel#cardTitle {{
 QPushButton#ghostBtn,
 QToolButton#ghostBtn {{
     background: transparent;
-    border: none;
+    /* 预留透明焦点环：focus 只改颜色，不改变按钮尺寸或让顶栏跳动。
+       原 padding 5px 12px + 无边框；现在 3px 10px + 四边 2px，外框相等。 */
+    border: 2px solid transparent;
     border-radius: {RADIUS_CTRL}px;
-    padding: 5px 12px;
+    padding: 3px 10px;
     min-height: 20px;
     max-height: 20px;
     color: {t.text_secondary};
+}}
+QPushButton#ghostBtn:focus,
+QToolButton#ghostBtn:focus {{
+    border: 2px solid {t.accent};
 }}
 QPushButton#ghostBtn:hover,
 QToolButton#ghostBtn:hover {{
@@ -455,6 +479,12 @@ QPushButton#accentOutline {{
     color: {t.accent};
     font-weight: 600;
 }}
+QPushButton#accentOutline:focus {{
+    /* ID 基态会压过通用 QPushButton:focus，必须同等级显式补齐。
+       1px→2px 的同时内收 padding，聚焦前后几何不变。 */
+    border: 2px solid {t.accent_pressed};
+    padding: 6px 17px;
+}}
 QPushButton#accentOutline:hover {{
     background: {t.accent};
     color: {t.text_inverse};
@@ -465,18 +495,28 @@ QPushButton#accentOutline:pressed {{
     color: {t.text_inverse};
 }}
 
-/* ---------- 分组卡片：标题在卡片内部（卡片式分组） ---------- */
-/* margin-top 必须为 0：卡片间距统一由布局 spacing（12px）负责，
-   否则「布局间距 + QSS 外边距」叠加，卡片间缝隙会比别处宽一档 */
-QGroupBox {{
+/* ---------- 参数面板：一张卡 + 分区（style.md 面板语法） ---------- */
+/* 从「三张彼此独立的卡片」改为「一张连续面板 + 内部分区」。理由是卡片式
+   分组会让每个参数域看起来都是一等公民，而参数域之间其实是同一件事的
+   三个步骤；连续面板读起来像一台仪器的控制面板，而不是三张并排的表单。
+   分区之间用 1px 分隔线（见 QFrame#panelDivider）而不是留白 + 边框。 */
+QFrame#sidePanelBody {{
     background: {t.bg_secondary};
     border: 1px solid {t.border};
     border-radius: {RADIUS_CARD}px;
+}}
+QFrame#panelDivider {{
+    background: {t.border};
+    border: none;
+}}
+QGroupBox {{
+    background: transparent;
+    border: none;
     margin-top: 0px;
-    padding-top: 28px;
-    padding-bottom: {SPACE_MD}px;
-    padding-left: {SPACE_MD}px;
-    padding-right: {SPACE_MD}px;
+    padding-top: 20px;
+    padding-bottom: 0px;
+    padding-left: 0px;
+    padding-right: 0px;
     /* 标题字号/字重必须写在这里：Qt 对 ::title 子控件的 font 支持
        不完整，font-weight 写在 ::title 上会被静默忽略（6.11 实测，
        探针对照确认）；写在分组本体上标题即加粗，组内子控件仍走
@@ -487,8 +527,8 @@ QGroupBox {{
 QGroupBox::title {{
     subcontrol-origin: padding;
     subcontrol-position: top left;
-    left: {SPACE_MD + 2}px;
-    top: 6px;
+    left: 0px;
+    top: 3px;
     background: transparent;
     color: {t.text_primary};
     /* 字号/字重由 QGroupBox 本体负责（见上），这里只管颜色与定位 */
@@ -562,18 +602,20 @@ QPushButton:disabled {{
     color: {t.text_tertiary};
 }}
 QPushButton#primary {{
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 {t.accent_hi}, stop:1 {t.accent});
+    background: {t.accent};
     border: 1px solid {t.accent};
-    border-radius: 10px;
+    border-radius: {RADIUS_CARD}px;
     color: {t.text_inverse};
     font-size: {FONT_LG}pt;
     font-weight: 600;
     padding: 9px 24px;
 }}
+QPushButton#primary:focus {{
+    border: 2px solid {t.accent_pressed};
+    padding: 8px 23px;
+}}
 QPushButton#primary:hover {{
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 {t.accent}, stop:1 {t.accent_hover});
+    background: {t.accent_hover};
     border-color: {t.accent_hover};
 }}
 QPushButton#primary:pressed {{
@@ -627,24 +669,20 @@ QComboBox::drop-down {{
     border: none;
     width: 28px;
 }}
-/* 自定义了 drop-down 之后 Qt 不再绘制默认箭头，必须显式画一个三角 */
+/* 下拉指示器由 ChevronComboBox 自绘（gui/widgets.py）：QSS 的 border
+   三角做不出圆头笔触的 chevron，硬边与全局圆角语言不符（UI-018）。
+   这里只把原生箭头尺寸归零，drop-down 的 28px 点击区仍然保留，
+   位置必须与 ChevronComboBox.DROP_ZONE 一致。 */
 QComboBox::down-arrow {{
     width: 0px;
     height: 0px;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid {t.text_secondary};
-}}
-QComboBox::down-arrow:disabled {{
-    border-top-color: {t.text_tertiary};
-}}
-QComboBox::down-arrow:hover {{
-    border-top-color: {t.accent};
+    border: none;
+    image: none;
 }}
 QComboBox QAbstractItemView {{
     background: {t.bg_secondary};
     border: 1px solid {t.border_strong};
-    border-radius: 10px;
+    border-radius: {RADIUS_CARD}px;
     selection-background-color: {t.accent_wash};
     selection-color: {t.text_primary};
     outline: none;
@@ -692,7 +730,7 @@ QCheckBox:disabled, QRadioButton:disabled {{ color: {t.text_tertiary}; }}
 QCheckBox::indicator {{
     width: 16px;
     height: 16px;
-    border-radius: 5px;
+    border-radius: {RADIUS_MICRO}px;
 }}
 QCheckBox::indicator:unchecked,
 QRadioButton::indicator:unchecked {{
@@ -787,8 +825,7 @@ QProgressBar {{
     font-size: {FONT_SM}pt;
 }}
 QProgressBar::chunk {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-        stop:0 {t.accent_hi}, stop:1 {t.accent});
+    background: {t.accent};
     border-radius: 8px;
 }}
 
@@ -801,7 +838,7 @@ QScrollBar:vertical {{
 }}
 QScrollBar::handle:vertical {{
     background: {t.border_strong};
-    border-radius: 4px;
+    border-radius: {RADIUS_MICRO}px;
     min-height: 36px;
     margin: 2px;
 }}
@@ -813,7 +850,7 @@ QScrollBar:horizontal {{
 }}
 QScrollBar::handle:horizontal {{
     background: {t.border_strong};
-    border-radius: 4px;
+    border-radius: {RADIUS_MICRO}px;
     min-width: 36px;
     margin: 2px;
 }}
@@ -904,6 +941,11 @@ QLabel#hintLabel {{
 }}
 
 /* ---------- Toast 完成通知 ---------- */
+/* 外层只负责定位与淡入淡出（透明底），底色/描边/投影在 #toast 面板上 —
+   一个控件只能挂一个 QGraphicsEffect，两层拆分才能同时有投影与透明度 */
+QWidget#toastHost {{
+    background: transparent;
+}}
 QFrame#toast {{
     background: {t.bg_secondary};
     border: 1px solid {t.border};
@@ -923,7 +965,7 @@ QFrame#toast QLabel#toastBody {{
 QPushButton#toastClose {{
     background: transparent;
     border: none;
-    border-radius: 4px;
+    border-radius: {RADIUS_MICRO}px;
     padding: 2px 6px;
     color: {t.text_tertiary};
     font-weight: 700;
@@ -935,7 +977,7 @@ QPushButton#toastClose:hover {{
 QPushButton#toastAction {{
     background: transparent;
     border: none;
-    border-radius: 4px;
+    border-radius: {RADIUS_MICRO}px;
     padding: 4px 8px;
     color: {t.accent};
     font-weight: 600;
@@ -958,7 +1000,7 @@ QToolTip {{
 QMenu {{
     background: {t.bg_secondary};
     border: 1px solid {t.border};
-    border-radius: 10px;
+    border-radius: {RADIUS_CARD}px;
     padding: 5px;
 }}
 QMenu::item {{
@@ -995,6 +1037,11 @@ QMessageBox QPushButton {{
 
 
 __all__ = [
+    "ANIM_BASE_MS",
+    "ANIM_EASE_IN_OUT",
+    "ANIM_EASE_OUT",
+    "ANIM_FAST_MS",
+    "ANIM_SLOW_MS",
     "DARK",
     "LIGHT",
     "FONT_2XL",

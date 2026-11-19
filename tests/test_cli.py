@@ -131,3 +131,26 @@ class TestSlidesError:
         assert code == 1
         assert "PowerPoint" in out
         assert "失败 1 项" in out
+
+
+class TestTrimFlag:
+    def test_trim_flag_changes_output_aspect(self, tmp_path, capsys):
+        """--trim：输出按内容比例出图，而不是按纸张比例。"""
+        from PIL import Image, ImageDraw
+
+        src = tmp_path / "fig.png"
+        image = Image.new("RGB", (400, 300), (255, 255, 255))
+        ImageDraw.Draw(image).rectangle((100, 60, 300, 240), fill=(0, 0, 0))
+        image.save(src)
+
+        out_dir = tmp_path / "out"
+        code = main([
+            str(src), "--width", "10", "--unit", "cm", "--dpi", "150",
+            "--format", "png", "--out", str(out_dir), "--trim",
+        ])
+        assert code == 0
+        width, height = read_size(out_dir / "fig.png")
+        assert width == pytest.approx(591, abs=2)
+        assert height / width == pytest.approx(180 / 200, abs=0.02)
+        assert "裁去四周空白" in capsys.readouterr().out
+

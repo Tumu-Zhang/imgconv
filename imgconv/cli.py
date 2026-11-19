@@ -69,6 +69,8 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="取消等比：精确拉伸到目标宽高（需同时给出宽和高）")
     size.add_argument("--no-upscale", action="store_true",
                       help="不放大：源像素不足时按原始像素输出并给出警告")
+    size.add_argument("--trim", action="store_true",
+                      help="自动裁掉四周空白，只按主体内容出图（PDF/PPT/图片）")
 
     out = parser.add_argument_group("输出")
     out.add_argument("--dpi", type=int, default=300, help="输出 DPI，默认 300")
@@ -127,6 +129,7 @@ def _spec_from_args(args: argparse.Namespace) -> OutputSpec:
         dpi=args.dpi,
         keep_aspect=not args.no_aspect,
         allow_upscale=not args.no_upscale,
+        trim_margin=args.trim,
         tiff_compression=TiffCompression(args.tiff_compression),
         jpeg_quality=args.jpeg_quality,
         max_bytes=int(args.limit * 1024 * 1024) if args.limit else None,

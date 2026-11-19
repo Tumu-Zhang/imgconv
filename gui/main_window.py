@@ -37,6 +37,7 @@ from PySide6.QtCore import (
     Qt,
     QThread,
     QTime,
+    QTimer,
     QUrl,
 )
 from PySide6.QtGui import (
@@ -46,6 +47,7 @@ from PySide6.QtGui import (
     QDragEnterEvent,
     QDropEvent,
     QKeySequence,
+    QShortcut,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -92,8 +94,10 @@ from gui.maintenance import (
 from gui.session_log import SessionLog
 from gui.widgets import (
     CheckBoxHeader,
+    ChevronComboBox,
     EdgeFade,
     EditableChipDelegate,
+    FormRowFade,
     PillToggle,
     ToastNotification,
 )
@@ -192,6 +196,7 @@ class SizeParams:
     dpi: str = "300"
     keep_aspect: bool = True
     no_upscale: bool = False
+    trim_margin: bool = False  # 自动裁掉四周空白，只按主体内容出图
     last_side: str = "width"  # "width" | "height"
 
 
@@ -211,6 +216,13 @@ class MainWindow(QMainWindow):
         self._busy: bool = False
         self._last_output_dir: Path | None = None
         self._last_report: ConversionReport | None = None
+        # 关窗流程：转换中关窗不再阻塞主线程（详见 closeEvent）
+        self._closing: bool = False
+        self._close_deadline = QTimer(self)
+        self._close_deadline.setSingleShot(True)
+        self._close_deadline.timeout.connect(self._force_close)
+        # 上一条写进日志的文件名：进度回调每文件只记一次，避免刷屏
+        self._logged_file: str = ""
         # 批量填表时挂起 itemChanged，避免勾选/校验逻辑被程序写入触发
         self._loading_rows: bool = False
         # 每行文件的尺寸参数（键 str(path)）；无选中行时编辑的是默认模板
@@ -288,8 +300,15 @@ class MainWindow(QMainWindow):
         root.addWidget(self._build_top_bar())
         root.addWidget(body, 1)
 
-        # 完成通知浮层（非模态，位于窗口右下角）
+        # 完成通知浮层（非模态，窗口底部居中，不遮挡右栏动作条）
         self.toast = ToastNotification(self)
+
+        # Esc 关闭驻留 Toast（UI-015）：浮层不夺焦点，键盘用户原本只有
+        # 鼠标点 × 一条路。输入框获得焦点时让行 —— Esc 在输入语境里属于
+        # 编辑操作，不该顺手关掉别的东西。
+        self._toast_escape = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self._toast_escape.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._toast_escape.activated.connect(self._dismiss_toast_on_escape)
 
     def _build_top_bar(self) -> QWidget:
         """窗口顶栏：品牌图标 + 应用名/定位，语言/主题切换框靠右（同宽等高）。"""
@@ -651,14 +670,21 @@ class MainWindow(QMainWindow):
         # 横向留 AsNeeded：英文等长文案超出面板宽度时允许滚动查看，不硬裁
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
-        inner = QWidget()
+        inner = QFrame()
+        inner.setObjectName("sidePanelBody")
         layout = QVBoxLayout(inner)
-        layout.setContentsMargins(0, theme.SPACE_XS, theme.SPACE_XS, theme.SPACE_SM)
-        layout.setSpacing(theme.SPACE_MD)
+        layout.setContentsMargins(
+            theme.SPACE_LG, theme.SPACE_MD, theme.SPACE_MD, theme.SPACE_LG
+        )
+        layout.setSpacing(0)
 
         layout.addWidget(self._build_format_group())
+        layout.addWidget(self._panel_divider())
+        layout.addSpacing(theme.SPACE_XS)
         self.size_group = self._build_size_group()
         layout.addWidget(self.size_group)
+        layout.addWidget(self._panel_divider())
+        layout.addSpacing(theme.SPACE_XS)
         layout.addWidget(self._build_output_naming_group())
         layout.addStretch(1)
 
@@ -677,6 +703,14 @@ class MainWindow(QMainWindow):
         panel.setMinimumWidth(372)
         panel.setMaximumWidth(470)
         return panel
+
+    def _panel_divider(self) -> QFrame:
+        """参数面板的分区线：1px 横贯（style.md 面板语法，替代三张独立卡片）。"""
+        line = QFrame()
+        line.setObjectName("panelDivider")
+        line.setFixedHeight(1)
+        line.setFrameShape(QFrame.Shape.NoFrame)
+        return line
 
     def _reposition_edge_fades(self) -> None:
         """渐隐遮罩贴住滚动区上下边（滚动条出现/消失时随尺寸重排）。"""
@@ -708,8 +742,8 @@ class MainWindow(QMainWindow):
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         return form
 
-    def _add_row(self, form: QFormLayout, key: str, field) -> None:
-        """带本地化字段标签的 addRow。
+    def _add_row(self, form: QFormLayout, key: str, field) -> QLabel:
+        """带本地化字段标签的 addRow，返回标签（供行显隐过渡使用）。
 
         标签统一 fieldLabel 样式（二级色，与分组标题、输入内容拉开层级），
         并登记进 _form_rows，语言切换时按 key 就地刷新。
@@ -718,6 +752,7 @@ class MainWindow(QMainWindow):
         label.setObjectName("fieldLabel")
         form.addRow(label, field)
         self._form_rows.append((form, label, key))
+        return label
 
     def _build_format_group(self) -> QWidget:
         """输出格式：编码选项跟随格式出现 —— TIFF 压缩只在 TIFF，JPEG 质量只在 JPEG。"""
@@ -725,14 +760,14 @@ class MainWindow(QMainWindow):
         self.format_group = box
         form = self._format_form = self._form(box)
 
-        self.fmt_combo = QComboBox()
+        self.fmt_combo = ChevronComboBox()
         for fmt in OutputFormat:
             self.fmt_combo.addItem(i18n.t(f"fmt_{fmt.value}"), fmt.value)
         self.fmt_combo.setCurrentIndex(0)
         self.fmt_combo.currentIndexChanged.connect(self._on_format_changed)
         self._add_row(form, "label_format", self.fmt_combo)   # row 0
 
-        self.tiff_combo = QComboBox()
+        self.tiff_combo = ChevronComboBox()
         for compression, key in (
             (TiffCompression.LZW, "tiff_lzw"),
             (TiffCompression.DEFLATE, "tiff_deflate"),
@@ -740,17 +775,23 @@ class MainWindow(QMainWindow):
         ):
             self.tiff_combo.addItem(i18n.t(key), compression.value)
         self.tiff_combo.currentIndexChanged.connect(self._refresh_preview)
-        self._add_row(form, "tiff_compression", self.tiff_combo)
+        tiff_label = self._add_row(form, "tiff_compression", self.tiff_combo)
         self.row_tiff = 1
+        self._tiff_fade = FormRowFade(
+            form, self.row_tiff, [tiff_label, self.tiff_combo], self
+        )
 
-        self.jpeg_quality = QComboBox()
+        self.jpeg_quality = ChevronComboBox()
         self.jpeg_quality.setEditable(True)
         for value in ("100", "95", "90", "80", "70"):
             self.jpeg_quality.addItem(value)
         self.jpeg_quality.setCurrentText("95")
         self.jpeg_quality.currentTextChanged.connect(self._refresh_preview)
-        self._add_row(form, "jpeg_quality", self.jpeg_quality)
+        jpeg_label = self._add_row(form, "jpeg_quality", self.jpeg_quality)
         self.row_jpeg = 2
+        self._jpeg_fade = FormRowFade(
+            form, self.row_jpeg, [jpeg_label, self.jpeg_quality], self
+        )
 
         # 体积上限：与压缩/质量同属「编码与体积」，随格式组常驻
         self.limit_edit = QLineEdit()
@@ -788,7 +829,7 @@ class MainWindow(QMainWindow):
 
         self.phys_width = self._number_edit("8.5")
         self.phys_height = self._number_edit("", i18n.t("phys_placeholder"))
-        self.unit_combo = QComboBox()
+        self.unit_combo = ChevronComboBox()
         for unit in Unit:
             self.unit_combo.addItem(i18n.t(f"unit_{unit.value}"), unit.value)
         self.unit_combo.setCurrentIndex(1)  # cm
@@ -811,7 +852,7 @@ class MainWindow(QMainWindow):
         px_row.addWidget(QLabel("px"))
         self._add_row(form, "label_pixels", px_row)
 
-        self.dpi_combo = QComboBox()
+        self.dpi_combo = ChevronComboBox()
         self.dpi_combo.setEditable(True)
         for value in ("72", "150", "300", "600", "1200"):
             self.dpi_combo.addItem(value)
@@ -826,6 +867,11 @@ class MainWindow(QMainWindow):
 
         self.upscale_check = QCheckBox(i18n.t("upscale_check"))
         form.addRow("", self.upscale_check)
+
+        self.trim_check = QCheckBox(i18n.t("trim_check"))
+        self.trim_check.setToolTip(i18n.t("trim_hint"))
+        self.trim_check.toggled.connect(self._refresh_preview)
+        form.addRow("", self.trim_check)
 
         for widget in (self.phys_width, self.phys_height, self.px_width, self.px_height):
             widget.textChanged.connect(self._refresh_preview)
@@ -878,7 +924,7 @@ class MainWindow(QMainWindow):
         name_col.addWidget(self.name_hint_label)
         self._add_row(form, "label_name_template", name_col)
 
-        self.conflict_combo = QComboBox()
+        self.conflict_combo = ChevronComboBox()
         for policy, key in (
             (ConflictPolicy.RENAME, "conflict_rename"),
             (ConflictPolicy.OVERWRITE, "conflict_overwrite"),
@@ -908,7 +954,6 @@ class MainWindow(QMainWindow):
         self.start_btn = QPushButton(i18n.t("start_convert"))
         self.start_btn.setObjectName("primary")
         self.start_btn.setMinimumHeight(46)
-        self.start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.start_btn.setToolTip(i18n.t("start_convert_tooltip"))
         self.start_btn.clicked.connect(self._start)
         self.start_btn.setEnabled(False)
@@ -1065,6 +1110,8 @@ class MainWindow(QMainWindow):
         self.aspect_check.setText(i18n.t("aspect_check"))
         self.aspect_check.setToolTip(i18n.t("aspect_link_hint"))
         self.upscale_check.setText(i18n.t("upscale_check"))
+        self.trim_check.setText(i18n.t("trim_check"))
+        self.trim_check.setToolTip(i18n.t("trim_hint"))
         self.lossy_check.setText(i18n.t("lossy_fallback"))
 
         # 下拉框条目（保留当前选中，只换文字）
@@ -1285,6 +1332,10 @@ class MainWindow(QMainWindow):
         check_item.setCheckState(Qt.CheckState.Checked)
 
         index_item = self._plain_item(str(row + 1))
+        # 序号是量值列：右对齐后 1 / 10 / 100 的位权才对齐（layout-013）
+        index_item.setTextAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
         name_item = self._plain_item(path.name, tooltip=str(path))
 
         pages_item = self._plain_item(i18n.t("pages_all"), tooltip=i18n.t("pages_tooltip"))
@@ -1349,14 +1400,20 @@ class MainWindow(QMainWindow):
             if info.dpi is None:
                 dpi_text = i18n.t("log_no_dpi")
             else:
-                x, y = info.dpi
-                dpi_text = f"{x:.0f} dpi" if abs(x - y) < 0.01 else f"{x:.0f} x {y:.0f} dpi"
-            return f"{kind} · {w} x {h} px / {dpi_text}"
+                dx, dy = info.dpi
+                # 尺寸一律用乘号 ×（copy-009）：此前这里写 ASCII "x"，
+                # 与尺寸输入行、规格条的 × 不一致，同一界面两套写法
+                dpi_text = (
+                    f"{dx:.0f} dpi"
+                    if abs(dx - dy) < 0.01
+                    else f"{dx:.0f} × {dy:.0f} dpi"
+                )
+            return f"{kind} · {w} × {h} px / {dpi_text}"
         if info.kind in (SourceKind.PDF, SourceKind.SVG) and info.page_sizes_in:
             w, h = info.page_sizes_in[0]
             first = i18n.t("log_first_page", w=w * 25.4, h=h * 25.4)
             if info.kind is SourceKind.SVG:
-                return f"{kind} · {w * 25.4:.0f} x {h * 25.4:.0f} mm"
+                return f"{kind} · {w * 25.4:.0f} × {h * 25.4:.0f} mm"
             return f"{kind} · {i18n.t('log_source_page', n=info.page_count)} / {first}"
         if info.kind is SourceKind.SLIDES:
             if info.page_count:
@@ -1789,11 +1846,13 @@ class MainWindow(QMainWindow):
 
     # -- 格式切换：编码行跟随格式 ----------------------------------------
     def _on_format_changed(self, *_args) -> None:
-        if not hasattr(self, "tiff_combo") or not hasattr(self, "_format_form"):
+        if not hasattr(self, "_tiff_fade") or not hasattr(self, "_jpeg_fade"):
             return
         fmt = OutputFormat(self.fmt_combo.currentData())
-        self._format_form.setRowVisible(self.row_tiff, fmt is OutputFormat.TIFF)
-        self._format_form.setRowVisible(self.row_jpeg, fmt is OutputFormat.JPEG)
+        # 行显隐走过渡而非 setRowVisible 直切（UI-016）：先淡出内容再收行高，
+        # 先展开行高再淡入；系统「减少动效」时 FormRowFade 内部自动瞬时
+        self._tiff_fade.set_visible(fmt is OutputFormat.TIFF)
+        self._jpeg_fade.set_visible(fmt is OutputFormat.JPEG)
         # UI 还没搭完时不刷新（start_btn 是最后创建的控件之一）
         if hasattr(self, "start_btn"):
             self._refresh_preview()
@@ -1874,6 +1933,7 @@ class MainWindow(QMainWindow):
             dpi=dpi,
             keep_aspect=keep_aspect,
             allow_upscale=not p.no_upscale,
+            trim_margin=p.trim_margin,
             tiff_compression=TiffCompression(self.tiff_combo.currentData()),
             jpeg_quality=quality,
             max_bytes=max_bytes,
@@ -1925,6 +1985,7 @@ class MainWindow(QMainWindow):
             dpi=self.dpi_combo.currentText().strip(),
             keep_aspect=self.aspect_check.isChecked(),
             no_upscale=self.upscale_check.isChecked(),
+            trim_margin=self.trim_check.isChecked(),
             last_side=self._pending_side,
         )
 
@@ -1970,6 +2031,7 @@ class MainWindow(QMainWindow):
             self.dpi_combo.setCurrentText(params.dpi)
             self.aspect_check.setChecked(params.keep_aspect)
             self.upscale_check.setChecked(params.no_upscale)
+            self.trim_check.setChecked(params.trim_margin)
         finally:
             self._loading_panel = False
         self._enable_size_inputs()
@@ -2057,26 +2119,26 @@ class MainWindow(QMainWindow):
             i18n.t("spec_queue", n=len(self._rows)) if len(self._rows) > 1 else ""
         )
 
-        def cell(text: str, *, lead: bool = False, soft: bool = False) -> str:
-            if soft:
-                color, weight = strip_soft, "400"
-                size, style = theme.FONT_SM, "italic"
-            else:
-                color = strip_ink
-                weight = "700" if lead else "400"
-                size, style = theme.FONT_XL, "normal"
-            return (
-                f'<td style="padding-right:16px; color:{color}; font-weight:{weight};'
-                f' font-size:{size}pt; font-style:{style};">{text}</td>'
-            )
+        # S1 规格仪表盘（style.md）：主读数最大且等宽，单位降两号紧随；
+        # 第二行是「怎么转」，第三行是「换算成什么」，信息密度依次递减。
+        mono = theme.mono_family()
+        primary = (
+            f'<span style="font-family:\'{mono}\'; font-size:{theme.FONT_3XL}pt;'
+            f' font-weight:700; color:{strip_ink};">{width_px} × {height_px}</span>'
+            f'<span style="font-family:\'{mono}\'; font-size:{theme.FONT_SM}pt;'
+            f' color:{strip_soft};"> px</span>'
+        )
+        middle = " · ".join(
+            part for part in (f"{geometry.dpi} dpi", fmt_text, size_text) if part
+        )
+        tail = " · ".join(part for part in (phys, queue_text) if part)
 
         self.preview_label.setText(
-            "<table cellspacing='0' cellpadding='0'>"
-            f"<tr>{cell(f'{width_px} × {height_px} px', lead=True)}"
-            f"{cell(f'{geometry.dpi} dpi')}{cell(fmt_text)}</tr>"
-            f"<tr>{cell(phys, soft=True)}{cell(size_text, soft=True)}"
-            f"{cell(queue_text, soft=True)}</tr>"
-            "</table>"
+            primary
+            + f'<br><span style="font-family:\'{mono}\'; font-size:{theme.FONT_MD}pt;'
+              f' color:{strip_soft};">{html.escape(middle)}</span>'
+            + f'<br><span style="font-size:{theme.FONT_SM}pt;'
+              f' color:{strip_soft};">{html.escape(tail)}</span>'
         )
 
     def _strip_spec_key(self) -> str | None:
@@ -2138,9 +2200,12 @@ class MainWindow(QMainWindow):
         self.log_view.clear()
         self._log_records.clear()
         self._status_summary = None
+        self._logged_file = ""
+        self._closing = False
         self._set_busy(True)
         self.progress.setRange(0, len(files))
         self.progress.setValue(0)
+        self._append_log("log_started", "info", n=len(files))
 
         # 每个文件自己的页码范围（仅 PDF/PPT）与尺寸参数，键为 str(路径)
         page_overrides = {str(path): self._pages_override_for(path) for path in files}
@@ -2157,6 +2222,7 @@ class MainWindow(QMainWindow):
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_progress)
+        self._worker.stage.connect(self._on_stage)
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
         self._worker.finished.connect(self._thread.quit)
@@ -2175,6 +2241,21 @@ class MainWindow(QMainWindow):
         self.status_label.setText(
             i18n.t("status_converting", name=current, done=done, total=total)
         )
+        if current != self._logged_file:
+            self._logged_file = current
+            self._append_log(
+                "log_file_start", "info", i=done + 1, n=total, name=current
+            )
+
+    def _on_stage(self, message: str) -> None:
+        """转换线程上报的当前阶段：原样进日志。
+
+        这条通道是"日志能不能说清卡在哪"的关键（BUG-002）：PowerPoint 导出
+        动辄几十秒，期间如果没有阶段输出，导出的日志就是一片空白。
+        """
+        self._append_log_raw(message, "info")
+        if self._busy:
+            self.status_label.setText(message)
 
     def _on_finished(self, report: ConversionReport) -> None:
         self._last_report = report
@@ -2245,6 +2326,10 @@ class MainWindow(QMainWindow):
             self._thread.deleteLater()
         self._thread = None
         self._worker = None
+        if self._closing:
+            # 「停止后再关窗」：线程已收尾，这一轮 closeEvent 会走正常路径
+            self._close_deadline.stop()
+            self.close()
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
@@ -2266,6 +2351,17 @@ class MainWindow(QMainWindow):
     # ==================================================================
     # 完成通知（非模态 Toast，不打断继续操作）
     # ==================================================================
+    def _dismiss_toast_on_escape(self) -> None:
+        """Esc 关闭浮层（UI-015 / a11y-015「键盘一步可消除」）。"""
+        if self.toast.isHidden():
+            return
+        focus = QApplication.focusWidget()
+        # 输入框里的 Esc 归输入框：不抢。可编辑下拉框的焦点在内部
+        # QLineEdit 上，同样被这里挡下。
+        if isinstance(focus, QLineEdit):
+            return
+        self.toast.dismiss()
+
     def _show_completion_toast(self, report: ConversionReport) -> None:
         ok_count = report.ok_count
         fail_count = report.fail_count
@@ -2648,6 +2744,7 @@ class MainWindow(QMainWindow):
             dpi=str(s.value("dpi", "300")),
             keep_aspect=s.value("keep_aspect", True, type=bool),
             no_upscale=s.value("no_upscale", False, type=bool),
+            trim_margin=s.value("trim_margin", False, type=bool),
             last_side=str(s.value("last_side", "width")),
         )
         self._load_row_into_panel(None)
@@ -2706,6 +2803,7 @@ class MainWindow(QMainWindow):
         s.setValue("dpi", p.dpi)
         s.setValue("keep_aspect", p.keep_aspect)
         s.setValue("no_upscale", p.no_upscale)
+        s.setValue("trim_margin", p.trim_margin)
         s.setValue("last_side", p.last_side)
         s.setValue("tiff_compression", self.tiff_combo.currentData())
         s.setValue("jpeg_quality", self.jpeg_quality.currentText())
@@ -2717,16 +2815,43 @@ class MainWindow(QMainWindow):
         s.setValue("update_check_on_start", self._auto_check)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
-        if self._worker is not None:
-            self._worker.cancel()
+        """关窗：转换还在跑时走「先停后关」，主线程一秒都不阻塞。
+
+        旧实现是在这里 thread.wait(15_000) —— 主线程卡住 15 秒，Windows 立刻把
+        标题栏刷成「未响应」；更糟的是 15 秒等不到就置为孤儿线程继续关窗，
+        进程留在后台把剩下的文件默默转完（用户看到的现象：窗口卡死、日志空白，
+        但图片确实生成了）。现在改成：请求取消 → 结束 PowerPoint 进程让 COM
+        立刻返回 → 线程收尾后自己再关一次窗；8 秒兜底强行收尾。
+        """
+        thread, worker = self._thread, self._worker
+        if thread is not None and thread.isRunning() and not self._closing:
+            self._closing = True
+            if worker is not None:
+                worker.cancel()
+            self._append_log("log_stopping", "warn")
+            self.status_label.setText(i18n.t("status_stopping"))
+            self._close_deadline.start(8_000)
+            event.ignore()
+            return
+
+        self._closing = True
+        self._close_deadline.stop()
+        self.toast.close_now()  # 浮层是独立工具窗口，宿主关了要显式收掉
         self._save_settings()
         # 写「正常退出」标记：下次启动据此判断上次是干净退出还是崩溃
         self._session_log.finish()
+        super().closeEvent(event)
 
+    def _force_close(self) -> None:
+        """兜底：8 秒还没停下来，就不再等（可能是打不断的 COM / 超长编码）。
+
+        只把线程与窗口解绑然后退出，主线程始终没有阻塞过 —— 用户看到的仍是
+        "窗口关了"，而不是"窗口假死 15 秒"。
+        """
         thread, worker = self._thread, self._worker
         if thread is not None and thread.isRunning():
-            if not thread.wait(15_000):
-                _orphaned_jobs.extend([thread, worker])
-                thread.setParent(None)
-
-        super().closeEvent(event)
+            _orphaned_jobs.extend([thread, worker])
+            thread.setParent(None)
+        self._thread = None
+        self._worker = None
+        self.close()

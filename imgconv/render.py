@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import fitz  # PyMuPDF
 import numpy as np
 from PIL import Image
 
+from imgconv import trim
 from imgconv.model import TargetGeometry
 
 Image.MAX_IMAGE_PIXELS = 600_000_000
@@ -151,6 +153,57 @@ class PdfPageRenderer:
         rect = self._doc[index].rect
         return rect.width / 72.0, rect.height / 72.0
 
+    def page_content_rect(
+        self,
+        index: int,
+        *,
+        probe_dpi: int = trim.PROBE_DPI,
+        tolerance: int = trim.DEFAULT_TOLERANCE,
+    ) -> tuple["fitz.Rect | None", float]:
+        """探测第 index 页主体内容的包围盒，返回 (裁剪矩形, 内容面积占比)。
+
+        矩形为 None 表示不需要（或不该）裁剪：内容已经铺满整页、整页空白、
+        或者探到的框小得离谱（多半是几个孤立噪点）。坐标是 PDF 点。
+        探测图按 probe_dpi 渲染，但长边封顶 4000 px —— A0 图纸也不会因为
+        探测把内存吃光；换算用的是「点/像素」实测比例，与取整无关。
+        """
+        page = self._doc[index]
+        rect = page.rect
+        if rect.width <= 0 or rect.height <= 0:  # pragma: no cover - 畸形 PDF
+            return None, 1.0
+
+        zoom = float(probe_dpi) / 72.0
+        longest = max(rect.width, rect.height)
+        if longest * zoom > 4000:
+            zoom = 4000 / longest
+        pixmap = page.get_pixmap(
+            matrix=fitz.Matrix(zoom, zoom),
+            colorspace=fitz.csRGB,
+            alpha=False,
+            annots=True,
+        )
+        probe = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+        box = trim.detect(probe, tolerance=tolerance)
+        if box is None:
+            return None, 1.0
+
+        # 探测像素 -> PDF 点（两个方向各自的实测比例，避免取整造成的偏差）。
+        # 向外让 SAFETY_PAD 个探测像素：包围盒本身已包含"出现差异的第一个像素"，
+        # 这层余量是给阈值边界上的抗锯齿像素留的 —— 用户明确要求
+        # 「宁可留一点点白边，也不要裁到线条」（300 dpi 下 1 像素约 0.085 mm）。
+        scale_x = rect.width / pixmap.width
+        scale_y = rect.height / pixmap.height
+        pad = float(trim.SAFETY_PAD)
+        clip = fitz.Rect(
+            max(rect.x0, rect.x0 + (box.left - pad) * scale_x),
+            max(rect.y0, rect.y0 + (box.top - pad) * scale_y),
+            min(rect.x1, rect.x0 + (box.right + pad) * scale_x),
+            min(rect.y1, rect.y0 + (box.bottom + pad) * scale_y),
+        )
+        if clip.width <= 0 or clip.height <= 0:  # pragma: no cover - 理论上不会发生
+            return None, 1.0
+        return clip, box.area_ratio
+
     def embedded_image_dpi(self, index: int) -> float | None:
         """估算页内嵌位图的最低有效分辨率（dpi）。
 
@@ -183,18 +236,47 @@ class PdfPageRenderer:
             worst = effective if worst is None else min(worst, effective)
         return worst
 
-    def render_page(self, index: int, geometry: TargetGeometry) -> tuple[Image.Image, list[str]]:
-        """把第 index 页（0 起始）渲染为目标像素尺寸。"""
+    def render_page(
+        self,
+        index: int,
+        geometry: TargetGeometry,
+        clip: "fitz.Rect | None" = None,
+    ) -> tuple[Image.Image, list[str]]:
+        """把第 index 页（0 起始）渲染为目标像素尺寸。
+
+        clip 给定时只渲染这块区域（PDF 点坐标），目标像素全部分配给它 ——
+        这是「自动裁白边」的关键：白边不参与渲染，不浪费内存也不稀释 DPI。
+        """
         page = self._doc[index]
         rect = page.rect
         if rect.width <= 0 or rect.height <= 0:  # pragma: no cover - 畸形 PDF
             raise RuntimeError(f"PDF 第 {index + 1} 页尺寸异常")
+        area = clip if clip is not None else rect
+        if area.width <= 0 or area.height <= 0:  # pragma: no cover - 裁到空
+            raise RuntimeError(f"PDF 第 {index + 1} 页裁剪区域为空")
 
         target_w, target_h = geometry.pixel_size
         # 直接把目标像素折进渲染矩阵，避免二次重采样
-        zoom_x = target_w / rect.width
-        zoom_y = target_h / rect.height
+        zoom_x = target_w / area.width
+        zoom_y = target_h / area.height
+        if clip is not None:
+            # 把裁剪框对齐到设备像素网格的**外侧**（floor 起点 / ceil 终点）。
+            # MuPDF 会把裁剪框向外扩到整像素，若向内对齐就可能切掉半像素的抗
+            # 锯齿边 —— 宁可多渲染一两列底色，也不能吃掉线条。多出来的列由
+            # 下面那句精确重采样收回到目标尺寸。
+            left = math.floor(area.x0 * zoom_x) / zoom_x
+            top = math.floor(area.y0 * zoom_y) / zoom_y
+            right = math.ceil(area.x1 * zoom_x) / zoom_x
+            bottom = math.ceil(area.y1 * zoom_y) / zoom_y
+            # 已经贴着页面边界时不再外扩（避免渲染到页面之外）
+            area = fitz.Rect(
+                max(rect.x0, left),
+                max(rect.y0, top),
+                min(rect.x1, right),
+                min(rect.y1, bottom),
+            )
         pixmap = page.get_pixmap(
+            clip=area,
             matrix=fitz.Matrix(zoom_x, zoom_y),
             colorspace=fitz.csRGB,
             alpha=False,

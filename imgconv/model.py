@@ -156,6 +156,8 @@ class OutputSpec:
     lossy_fallback: bool = True
     # 是否检查 PDF/PPT 页面内嵌位图的真实有效分辨率（避免"名义 600dpi、实际 72dpi"）
     check_embedded_dpi: bool = True
+    # 自动裁掉四周空白背景，只按主体内容出图（目标 DPI 全部落在内容上）
+    trim_margin: bool = False
 
     # --- 输出落盘 ---
     output_dir: Path | None = None

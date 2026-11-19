@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import (
-    QEasingCurve,
     QEvent,
     QObject,
+    QParallelAnimationGroup,
+    QPoint,
     QPointF,
     QPropertyAnimation,
     QRectF,
@@ -16,10 +17,20 @@ from PySide6.QtCore import (
     Signal,
     Property,
 )
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
+from PySide6.QtGui import (
+    QAccessible,
+    QAccessibleEvent,
+    QColor,
+    QLinearGradient,
+    QPainter,
+    QPen,
+    QPolygonF,
+)
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -257,7 +268,7 @@ class PillToggle(QWidget):
 
     外观：圆角到底的轨道里一枚 accent 高亮胶囊，选中项反白；
     交互：点击任意一侧直接选中（两项时等于拨动开关），
-    高亮块以 160ms OutCubic 滑过去 —— 切换有明确的「确认感」。
+    高亮块以 theme.ANIM_BASE_MS 的 OutCubic 滑过去 —— 切换有明确的「确认感」。
 
     键盘（a11y-001：所有交互元素 Tab 可达）：
     - StrongFocus：Tab 进入，焦点态在 paintEvent 里画 accent 焦点环；
@@ -281,16 +292,17 @@ class PillToggle(QWidget):
         self._datas: list[object] = []
         self._current = -1
         self._hovered = -1
+        # 光标保持默认箭头：手形只给链接（layout-014）。按钮/开关有
+        # 明确的平面可供性，手形反而把「可点」信号用滥了。
         self._hl_x = float(self.PAD)
         self.setMouseTracking(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
         # 键盘可达：裸 QWidget 默认 NoFocus，Tab 根本进不来（a11y-001）
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setFixedHeight(self.HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._anim = QPropertyAnimation(self, b"highlightPos", self)
-        self._anim.setDuration(160)
-        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.setDuration(theme.ANIM_BASE_MS)
+        self._anim.setEasingCurve(theme.ANIM_EASE_OUT)
 
     # -- 几何 ------------------------------------------------------------
     def _seg_width(self) -> int:
@@ -490,35 +502,211 @@ class PillToggle(QWidget):
             painter.end()
 
 
-class ToastNotification(QFrame):
-    """右下角浮层通知，用于转换完成反馈。
+class ChevronComboBox(QComboBox):
+    """标准输入框观感 + 自绘 chevron 下拉指示（UI-018）。
+
+    QSS 的 `::down-arrow` 只能用 border 拼实心三角，做不出圆头笔触的
+    chevron —— 三角的硬边与应用整体的 7px 圆角、圆头描边语言不一致。
+    这里在 QSS 里把原生箭头尺寸归零（仍保留 drop-down 的点击区宽度），
+    由 paintEvent 在右侧画一枚 1.6px 圆头 chevron：常态二级文字色、
+    悬停转 accent、禁用转三级文字色。所有 QComboBox 都走这个类，
+    避免「有的地方是三角、有的地方是 chevron」。
+    """
+
+    CHEVRON_W = 9.0
+    CHEVRON_H = 5.0
+    CHEVRON_STROKE = 1.6
+    DROP_ZONE = 28.0   # 必须与 QSS 的 QComboBox::drop-down width 一致
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        super().paintEvent(event)
+
+        t = theme.current_theme()
+        if not self.isEnabled():
+            color = t.text_tertiary
+        elif self.underMouse():
+            color = t.accent
+        else:
+            color = t.text_secondary
+
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            pen = QPen(QColor(color), self.CHEVRON_STROKE)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+
+            cx = self.width() - self.DROP_ZONE / 2.0
+            cy = self.height() / 2.0
+            half_w = self.CHEVRON_W / 2.0
+            half_h = self.CHEVRON_H / 2.0
+            painter.drawPolyline(
+                QPolygonF(
+                    [
+                        QPointF(cx - half_w, cy - half_h),
+                        QPointF(cx, cy + half_h),
+                        QPointF(cx + half_w, cy - half_h),
+                    ]
+                )
+            )
+        finally:
+            painter.end()
+
+
+class FormRowFade(QObject):
+    """QFormLayout 单行的显隐过渡（UI-016）。
+
+    `QFormLayout.setRowVisible` 是瞬时的：切换输出格式时 TIFF / JPEG
+    编码行凭空出现或消失，视线会被「跳一下」。这里对行内控件做
+    opacity 过渡：显示时先展开行高再淡入，隐藏时先淡出再收行高，
+    观感是「内容柔和退场，行随后让位」。
+
+    不做逐像素的高度动画 —— QFormLayout 不暴露行高，硬做要接管整个
+    布局，代价远大于收益（W41 条目里本就是「高度动画后议」）。
+
+    系统开启「减少动效」或窗口尚未上屏时一律瞬时落位，不播放过渡。
+    """
+
+    def __init__(self, form, row: int, widgets: list[QWidget], parent=None) -> None:
+        super().__init__(parent)
+        self._form = form
+        self._row = row
+        self._widgets = [widget for widget in widgets if widget is not None]
+        self._visible = True
+        self._fading_out = False
+        self._group = None
+        self._effects: list[QGraphicsOpacityEffect] = []
+        for widget in self._widgets:
+            effect = QGraphicsOpacityEffect(widget)
+            effect.setOpacity(1.0)
+            widget.setGraphicsEffect(effect)
+            self._effects.append(effect)
+
+    def set_visible(self, visible: bool) -> None:
+        """目标可见性；连续快速切换时以最后一次调用为准。"""
+        self._visible = visible
+        self._fading_out = False
+        self._stop()
+
+        if visible:
+            self._form.setRowVisible(self._row, True)
+
+        if (
+            theme.reduce_motion()
+            or not self._effects
+            or not self._widgets[0].window().isVisible()
+        ):
+            self._apply_opacity(1.0 if visible else 0.0)
+            if not visible:
+                self._form.setRowVisible(self._row, False)
+            return
+
+        if visible:
+            self._apply_opacity(0.0)
+            self._animate(1.0)
+        else:
+            self._fading_out = True
+            self._animate(0.0)
+
+    # -- 内部 -----------------------------------------------------------
+    def _apply_opacity(self, value: float) -> None:
+        for effect in self._effects:
+            effect.setOpacity(value)
+
+    def _animate(self, target: float) -> None:
+        group = QParallelAnimationGroup(self)
+        for effect in self._effects:
+            anim = QPropertyAnimation(effect, b"opacity", group)
+            anim.setDuration(theme.ANIM_BASE_MS)
+            anim.setEasingCurve(theme.ANIM_EASE_OUT)
+            anim.setStartValue(effect.opacity())
+            anim.setEndValue(target)
+            group.addAnimation(anim)
+        group.finished.connect(self._on_finished)
+        self._group = group
+        group.start()
+
+    def _stop(self) -> None:
+        if self._group is not None:
+            self._group.stop()
+            self._group.deleteLater()
+            self._group = None
+
+    def _on_finished(self) -> None:
+        if not self._fading_out:
+            return
+        self._fading_out = False
+        if not self._visible:
+            self._form.setRowVisible(self._row, False)
+
+
+class ToastNotification(QWidget):
+    """窗口底部居中的浮层通知，用于转换结果与撤销操作。
 
     非模态，不打断继续操作：
     - 全部成功时短暂停留后自动消失；
-    - 有失败/警告时驻留，由用户手动关闭；
-    - 跟随主窗口尺寸变化重新定位。
+    - 有失败/警告时驻留，由用户手动关闭（Esc 亦可，见 MainWindow）；
+    - 跟随宿主窗口的尺寸与位置变化重新定位。
+
+    实现为**无边框工具窗口**（Qt::Tool + 透明背景），而不是宿主窗口的
+    子控件。两个原因：
+    1. 淡入淡出要用窗口级 `windowOpacity` —— 子控件没有这个属性，而
+       QGraphicsOpacityEffect 与面板的投影效果**不能嵌套**：Qt 只会应用
+       最外层 effect，子级的 drop shadow 会被静默忽略（投影消失）。
+    2. 浮层需要压在表格、滚动区等所有子控件之上，独立窗口天然做到，
+       不必依赖 raise_() 与父子层叠顺序。
+
+    Tool 窗口不占任务栏、不抢焦点（配合 WA_ShowWithoutActivating），
+    并随宿主窗口一起销毁。
+
+    位置取窗口底部水平居中，而不是右下角：右栏动作条（开始转换 /
+    取消 / 打开输出文件夹）恰在右下角，完成通知弹在那里会直接盖住
+    用户下一步要点的按钮（feedback-011 位置律、a11y-015 焦点不被遮挡）。
     """
 
     MARGIN = 16
     WIDTH = 360
+    # 投影留白：投影向四外扩散约 blur+offset ≈ 34px，顶层窗口若贴着
+    # 卡片边缘，超出窗口矩形的部分会被裁掉 —— 内容内缩一圈，窗口整体变大。
+    SHADOW_PAD = 36
 
-    def __init__(self, parent: QWidget) -> None:
-        super().__init__(parent)
-        self.setObjectName("toast")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    def __init__(self, host: QWidget) -> None:
+        super().__init__(
+            host,
+            Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint,
+        )
+        self._host = host
+        self.setObjectName("toastHost")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setVisible(False)
+        self.setWindowOpacity(1.0)
         # 固定宽度：wordWrap 文本的 sizeHint 宽度不稳定，
-        # 依赖它定位会把浮层推出窗口右边界
-        self.setFixedWidth(self.WIDTH)
+        # 依赖它定位会把浮层推出窗口边界（多出的是投影留白）
+        self.setFixedWidth(self.WIDTH + self.SHADOW_PAD * 2)
 
+        self._panel = QFrame()
+        self._panel.setObjectName("toast")
+        self._panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         # 柔和投影：浮层与窗口之间的「空气感」
-        shadow = QGraphicsDropShadowEffect(self)
+        shadow = QGraphicsDropShadowEffect(self._panel)
         shadow.setBlurRadius(28)
         shadow.setOffset(0, 6)
-        shadow.setColor(QColor(15, 23, 42, 60))
-        self.setGraphicsEffect(shadow)
+        # 原 60/255 在 #f3f5f8 底上几乎看不见，等于白设；提到 96 让浮层
+        # 真正「离开台面」，又不至于变成重阴影
+        shadow.setColor(QColor(15, 23, 42, 96))
+        self._panel.setGraphicsEffect(shadow)
 
-        parent.installEventFilter(self)
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(
+            self.SHADOW_PAD, self.SHADOW_PAD, self.SHADOW_PAD, self.SHADOW_PAD
+        )
+        shell.setSpacing(0)
+        shell.addWidget(self._panel)
+
+        host.installEventFilter(self)
 
         self._bar = QFrame()
         self._bar.setFixedWidth(4)
@@ -562,7 +750,7 @@ class ToastNotification(QFrame):
         right.addWidget(self._body)
         right.addLayout(actions)
 
-        outer = QHBoxLayout(self)
+        outer = QHBoxLayout(self._panel)
         outer.setContentsMargins(
             theme.SPACE_SM, theme.SPACE_MD, theme.SPACE_MD, theme.SPACE_MD
         )
@@ -573,6 +761,13 @@ class ToastNotification(QFrame):
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.dismiss)
+
+        # 淡入淡出用窗口级不透明度（windowOpacity）：子控件没有这个属性，
+        # 而 QGraphicsOpacityEffect 会吃掉面板的投影效果（见类文档）
+        self._fade_anim = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade_anim.setEasingCurve(theme.ANIM_EASE_OUT)
+        self._fade_anim.finished.connect(self._on_fade_finished)
+        self._closing = False
 
     # ------------------------------------------------------------------
     # 展示与关闭
@@ -608,18 +803,89 @@ class ToastNotification(QFrame):
             self._action_callback = None
 
         self._timer.stop()
-        # 先显示再定位：隐藏时布局未激活，wordWrap 高度算不准
+        self._fade_anim.stop()
+        self._closing = False
+
+        # 先显示再定位：隐藏时布局未激活，wordWrap 高度算不准。
+        # 淡入前必须把不透明度先归零，否则第一帧会闪一下满不透明。
+        if theme.reduce_motion():
+            self.setWindowOpacity(1.0)
+        else:
+            self.setWindowOpacity(0.0)
         self.setVisible(True)
         self._reposition()
         self.raise_()
+
+        if not theme.reduce_motion():
+            self._fade_anim.setDuration(theme.ANIM_SLOW_MS)
+            self._fade_anim.setStartValue(0.0)
+            self._fade_anim.setEndValue(1.0)
+            self._fade_anim.start()
+
+        # 状态消息播报（a11y-011）：Toast 不夺焦点，读屏用户原本完全
+        # 听不到转换完成/失败。只对可见的浮层发一次 Alert，日志流水不走这里。
+        self._announce()
 
         if auto_close_ms > 0:
             self._timer.start(auto_close_ms)
 
     def dismiss(self) -> None:
-        """隐藏通知。"""
+        """隐藏通知（淡出后真正隐藏）。
+
+        幂等：重复调用、动画途中再调用都安全 —— 自动关闭计时器与
+        用户点 × / 按 Esc 可能同时发生。
+        """
         self._timer.stop()
+        if self.isHidden():
+            return
+        # 系统要求减少动效 / 窗口还没上屏：直接消失，不表演过渡
+        if theme.reduce_motion() or self.windowOpacity() <= 0.01:
+            self._fade_anim.stop()
+            self.setWindowOpacity(1.0)
+            self.setVisible(False)
+            return
+        self._closing = True
+        self._fade_anim.stop()
+        self._fade_anim.setDuration(theme.ANIM_FAST_MS)
+        self._fade_anim.setStartValue(self.windowOpacity())
+        self._fade_anim.setEndValue(0.0)
+        self._fade_anim.start()
+
+    def _on_fade_finished(self) -> None:
+        """淡出结束才真正隐藏；淡入结束什么都不做。"""
+        if not self._closing:
+            return
+        self._closing = False
+        self.setWindowOpacity(1.0)  # 复位，下次显示由 show_message 重新置 0
         self.setVisible(False)
+
+    def close_now(self) -> None:
+        """立即收掉浮层，不播淡出（宿主窗口关闭时用）。
+
+        浮层是独立工具窗口，宿主销毁不会自动带走它 —— 关窗时不显式
+        收掉，它会孤零零留在屏幕上。
+        """
+        self._timer.stop()
+        self._fade_anim.stop()
+        self._closing = False
+        self.setWindowOpacity(1.0)
+        self.setVisible(False)
+
+    def _announce(self) -> None:
+        """向辅助技术播报一条 Alert（a11y-011 状态消息 AA）。
+
+        读屏念的是控件的 accessibleName —— PySide6 的 QAccessibleEvent
+        没有 setDescription（6.x 实测），文案只能挂在控件上再发事件。
+        """
+        title = self._title.text()
+        body = self._body.text() if self._body.isVisible() else ""
+        self.setAccessibleName(f"{title}。{body}" if body else title)
+        try:
+            QAccessible.updateAccessibility(
+                QAccessibleEvent(self, QAccessible.Event.Alert)
+            )
+        except Exception:  # noqa: BLE001 - 无辅助技术/后端缺失时静默
+            pass
 
     def _invoke_action(self) -> None:
         if self._action_callback is not None:
@@ -631,19 +897,25 @@ class ToastNotification(QFrame):
         self._close_btn.setAccessibleName(close_tooltip)
 
     # ------------------------------------------------------------------
-    # 定位：主窗口右下角，跟随窗口尺寸变化
+    # 定位：宿主窗口底部水平居中，跟随尺寸与位置变化
     # ------------------------------------------------------------------
     def _reposition(self) -> None:
-        parent = self.parentWidget()
-        if parent is None:
+        host = self._host
+        if host is None:
             return
         self.adjustSize()  # 固定宽度下只按内容重算高度
-        x = parent.width() - self.width() - self.MARGIN
-        y = parent.height() - self.size().height() - self.MARGIN
-        self.move(max(self.MARGIN, x), max(self.MARGIN, y))
+        # 底部居中：右下角归右栏动作条所有（开始转换/取消/打开文件夹），
+        # 浮层压在那里等于挡住用户下一步要点的按钮。
+        # 视觉边距按「卡片」算，窗口比卡片多一圈投影留白，故减掉 SHADOW_PAD。
+        x = (host.width() - self.width()) // 2
+        y = host.height() - self.size().height() + self.SHADOW_PAD - self.MARGIN
+        self.move(host.mapToGlobal(QPoint(max(0, x), max(self.SHADOW_PAD, y))))
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
-        if watched is self.parentWidget() and event.type() == QEvent.Type.Resize:
+        if watched is self._host and event.type() in (
+            QEvent.Type.Resize,
+            QEvent.Type.Move,
+        ):
             if self.isVisible():
                 self._reposition()
         return super().eventFilter(watched, event)
@@ -651,8 +923,10 @@ class ToastNotification(QFrame):
 
 __all__ = [
     "CheckBoxHeader",
+    "ChevronComboBox",
     "EdgeFade",
     "EditableChipDelegate",
+    "FormRowFade",
     "PillToggle",
     "ToastNotification",
 ]

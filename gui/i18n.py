@@ -57,6 +57,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Finished: {ok} succeeded, {fail} failed",
     },
     "status_cancelling": {"zh": "正在取消…", "en": "Cancelling…"},
+    "status_stopping": {"zh": "正在停止…", "en": "Stopping…"},
     "status_aborted": {"zh": "转换中断", "en": "Conversion aborted"},
     "lang_busy_block": {
         "zh": "转换进行中，完成后再切换语言。",
@@ -242,6 +243,21 @@ _STRINGS: dict[str, dict[str, str]] = {
         "zh": "不放大：源像素不足时保持原始像素并提示",
         "en": "No upscaling: warn if source is smaller",
     },
+    "trim_check": {
+        "zh": "裁掉四周空白（只留主体内容）",
+        "en": "Trim margins (content only)",
+    },
+    "trim_hint": {
+        "zh": "只按「你画出来的东西」成图：按边缘底色识别内容范围（深色模板同样有效），"
+              "目标 DPI 全部落在内容上。内容超出幻灯片画幅时会先按绘制范围扩大画幅再导出，"
+              "不会漏掉画幅外的图；四周留约 0.1 mm 安全余量，确保不切到线条。"
+              "PDF、PPT 与图片均适用。",
+        "en": "Render only what you actually drew: the content area is detected by the "
+              "edge colour (dark templates work too) and the target DPI goes entirely "
+              "into it. If content extends beyond the slide, the canvas is enlarged to "
+              "the drawing extent first, so nothing outside is lost. A ~0.1 mm safety "
+              "margin is kept so strokes are never clipped. PDF, PPT and images.",
+    },
     "unit_mm": {"zh": "毫米", "en": "mm"},
     "unit_cm": {"zh": "厘米", "en": "cm"},
     "unit_inch": {"zh": "英寸", "en": "inch"},
@@ -334,6 +350,15 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Results, quality warnings and errors will appear here.",
     },
     "log_added": {"zh": "已加入 {n} 个文件", "en": "Added {n} file(s)"},
+    "log_started": {"zh": "开始转换：{n} 个文件", "en": "Started: {n} file(s)"},
+    "log_file_start": {
+        "zh": "（{i}/{n}）{name}",
+        "en": "({i}/{n}) {name}",
+    },
+    "log_stopping": {
+        "zh": "正在停止转换：先结束本次转换再退出…",
+        "en": "Stopping: finishing this conversion before exit…",
+    },
     "log_skipped": {"zh": "跳过不支持的文件：{name}", "en": "Skipped unsupported file: {name}"},
     "log_skipped_summary": {
         "zh": "跳过 {n} 个不支持的文件",

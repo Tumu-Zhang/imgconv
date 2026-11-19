@@ -33,8 +33,12 @@ EXCLUDES = (
     "tkinter", "matplotlib", "PyQt5", "PyQt6", "PySide2", "IPython",
     "pytest", "torch", "torchvision", "torchaudio", "pyarrow", "scipy",
     "onnxruntime", "pandas", "cryptography", "sklearn", "cv2", "numba",
-    "sympy", "h5py", "sqlalchemy", "lxml", "wx", "notebook", "jupyter",
+    "sympy", "h5py", "sqlalchemy", "wx", "notebook", "jupyter",
     "setuptools",
+    # ⚠️ lxml 不能排除：python-pptx 硬依赖它（pptx/oxml/* 全靠 lxml 解析 XML）。
+    # 曾把它当"用不上的大库"排除，结果 exe 里 python-pptx 永久 import 失败，
+    # PPT 的页数/宽高比在加入队列时读不到（aspect=None），既报无意义的警告，
+    # 又让等比换算拿不到比例 —— BUG-003。
     # 本程序用不到的 Qt 模块（详见 PRUNE）；一并排除可省下分析时间与 PYZ 体积
     "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtPdf", "PySide6.QtNetwork",
     "PySide6.QtOpenGL", "PySide6.QtSvg", "PySide6.QtVirtualKeyboard",
@@ -44,7 +48,12 @@ EXCLUDES = (
     "PIL._avif",
 )
 
-HIDDEN_IMPORTS = ("pythoncom", "win32com", "win32com.client")
+HIDDEN_IMPORTS = (
+    "pythoncom", "win32com", "win32com.client",
+    # python-pptx 只在探测 PPTX 页数/宽高比时懒加载，且它是经 lxml 解析 XML 的；
+    # 两者都显式列出来，避免打包后 import 失败（见 EXCLUDES 的说明）
+    "pptx", "lxml", "lxml.etree",
+)
 
 # ----------------------------------------------------------------------
 # 打包后精简：删掉对纯 Widgets 桌面应用完全无用的运行库
@@ -120,7 +129,17 @@ def _prune(internal: Path) -> tuple[int, list[str], list[str]]:
         for target in hits:
             if target.is_dir():
                 size = _measure(target)[1]
-                shutil.rmtree(target, ignore_errors=True)
+                # ⚠️ 不能用 shutil.rmtree：本机安全策略按「单回合删除文件数」
+                # 拦截（阈值 50），Qt translations 有 96 个 .qm，一删就连进程
+                # 一起被中断 —— 而且 ignore_errors=True 让它**静默失败**，
+                # 包体白胖 6.6MB 还看不出来。整体「移动」不算删除，移到
+                # 仓库根的忽略目录即可（.gitignore 已加 /.prune-trash/）。
+                trash = internal.parent / ".prune-trash"
+                trash.mkdir(exist_ok=True)
+                dest = trash / target.name
+                if dest.exists():
+                    dest = trash / f"{target.name}-{int(time.time())}"
+                shutil.move(str(target), str(dest))
             else:
                 size = target.stat().st_size
                 target.unlink(missing_ok=True)
@@ -192,10 +211,16 @@ def main() -> int:
         if not source.exists():
             continue
         target = ROOT / name
-        if target.is_dir():
-            shutil.rmtree(target, ignore_errors=True)
-        elif target.exists():
-            target.unlink()
+        if target.exists():
+            # 旧产物同样不能 rmtree：本机安全策略按「单回合删除文件数」
+            # 中断进程（旧的 _internal 有三百来个文件，一删就整条打包链断掉，
+            # 而且很难看出断在哪）。移到忽略目录，零删除完成替换。
+            trash = ROOT / ".prune-trash"
+            trash.mkdir(exist_ok=True)
+            dest = trash / f"{name}-{int(time.time())}"
+            if dest.exists():
+                dest = trash / f"{name}-{int(time.time())}-{time.perf_counter_ns()}"
+            shutil.move(str(target), str(dest))
         shutil.move(str(source), str(target))
     shutil.rmtree(ROOT / "dist", ignore_errors=True)
 

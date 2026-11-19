@@ -39,6 +39,11 @@ from pathlib import Path
 PP_SAVE_AS_PDF = 32
 PP_ALERTS_NONE = 1
 PP_FIXED_FORMAT_PDF = 2
+PP_WINDOW_MINIMIZED = 2
+
+# 旧版 .ppt 读形状坐标要走 COM：单次调用很便宜，但数量多了会明显拖慢，
+# 设个上限（超了只影响"内容范围"的精度，不影响转换本身）。
+_MAX_COM_SHAPES = 3000
 
 _POWERPOINT_IMAGE = "POWERPNT.EXE"
 
@@ -151,6 +156,10 @@ class PowerPointSession:
             # 用 DispatchEx 保证是独立实例，不干扰用户正在编辑的文稿。
             with contextlib.suppress(Exception):
                 self._app.Visible = True
+            # 出现就够了，别霸占前台 —— 一个整屏的 PowerPoint 窗口盖上来，
+            # 用户第一反应是"这软件卡死了"（BUG-002 的观感来源之一）。
+            with contextlib.suppress(Exception):
+                self._app.WindowState = PP_WINDOW_MINIMIZED
             with contextlib.suppress(Exception):
                 self._app.DisplayAlerts = PP_ALERTS_NONE
             with contextlib.suppress(Exception):
@@ -196,11 +205,30 @@ class PowerPointSession:
     def cache_dir(self) -> Path:
         return self._cache_dir
 
+    def abort(self) -> None:
+        """结束本会话自己启动的 PowerPoint 进程（任意线程可调用）。
+
+        只做 taskkill、不碰 COM，所以从界面线程调用来打断一段卡在 SaveAs 里的
+        转换是安全的：阻塞中的调用方会立刻收到 COM 错误，转换线程随即退出。
+        """
+        _kill_processes(self._own_pids)
+
     # -- 导出 -----------------------------------------------------------
-    def export_pdf(self, src: Path | str, dst: Path | None = None) -> Path:
+    def export_pdf(
+        self,
+        src: Path | str,
+        dst: Path | None = None,
+        *,
+        expand: tuple[float, float, float, float] | None = None,
+    ) -> Path:
         """把演示文稿导出为 PDF，返回 PDF 路径。
 
         同一源文件重复调用会命中缓存，方便「一次导出、多档 DPI 输出」。
+
+        expand 给定时（幻灯片坐标系里的 (left, top, right, bottom)，单位点），
+        先把**副本**的画幅改成这块区域、再把所有形状整体平移，然后才导出 ——
+        这样溢出画幅的内容也会出现在 PDF 里。原文一个字都不改：改的是缓存目录
+        里的副本，导出完随缓存一起清掉。
         """
         if self._app is None:
             raise OfficeUnavailableError("PowerPoint 会话尚未启动")
@@ -209,7 +237,7 @@ class PowerPointSession:
         if not src.exists():
             raise FileNotFoundError(f"找不到文件：{src}")
 
-        target = Path(dst).resolve() if dst else self._cache_for(src)
+        target = Path(dst).resolve() if dst else self._cache_for(src, expand)
         if target.exists() and target.stat().st_size > 0:
             return target
 
@@ -218,10 +246,28 @@ class PowerPointSession:
             with contextlib.suppress(OSError):
                 target.unlink()
 
+        work_src = src
+        writable = False
+        if expand is not None:
+            work_src = self._staged_copy(src)
+            if src.suffix.lower() in (".pptx", ".pptm"):
+                # .pptx 直接改 XML（确定性，且不受 PowerPoint 自动居中影响），
+                # 副本仍然是只读打开 —— 少一次写操作就少一次出错机会。
+                from imgconv import slides as slides_module
+
+                plan = slides_module.ExpandPlan(*expand, note="")
+                slides_module.expand_copy(src, work_src, plan)
+            else:
+                writable = True  # 旧版 .ppt 只能让 PowerPoint 自己改
         presentation = None
         try:
-            # WithWindow=False 能显著加快导出，且必须与 ReadOnly=True 同时使用
-            presentation = self._app.Presentations.Open(str(src), True, False, False)
+            # WithWindow=False 能显著加快导出，且必须与 ReadOnly=True 同时使用；
+            # 要改画幅/挪形状（旧版 .ppt）时就只能打开可写句柄。
+            presentation = self._app.Presentations.Open(
+                str(work_src), not writable, False, False
+            )
+            if writable:
+                self._resize_canvas(presentation, expand)
             presentation.SaveAs(str(target), PP_SAVE_AS_PDF)
         except Exception as exc:  # noqa: BLE001
             raise OfficeUnavailableError(
@@ -238,6 +284,57 @@ class PowerPointSession:
                 "文件可能已损坏，或包含被禁用宏的受限内容。"
             )
         return target
+
+    # -- 画幅调整（为"内容溢出画幅"服务）--------------------------------
+    def _staged_copy(self, src: Path) -> Path:
+        """把源文件复制到缓存目录：所有改动只发生在副本上。"""
+        digest = hashlib.sha1(
+            f"{src}:{src.stat().st_mtime_ns}:{src.stat().st_size}".encode("utf-8")
+        ).hexdigest()[:16]
+        copy = self._cache_dir / f"{digest}{src.suffix or '.pptx'}"
+        if not copy.exists() or copy.stat().st_size == 0:
+            shutil.copy2(src, copy)
+        return copy
+
+    @staticmethod
+    def _resize_canvas(presentation, rect: tuple[float, float, float, float]) -> None:
+        """把画幅改成 rect，并把每页的顶层形状整体平移，让内容落在画幅里。
+
+        **必须先记坐标、再改画幅、最后写绝对位置**：PowerPoint 在改画幅时会
+        自动把内容居中（实测整体位移正好是画幅差的一半），按增量 `Left -= left`
+        改会被它带偏 —— 当初就是这么把图外的内容推得更外面的。
+
+        只动顶层形状：组合形状的 .Left/.Top 一挪，组内子形状跟着走。
+        任何单个形状挪不动（只读占位符等）都跳过 —— 宁可它留在原地，
+        也不要因为一个形状失败而放弃整份文稿。
+        """
+        left, top, right, bottom = rect
+
+        captured = []
+        for slide in presentation.Slides:
+            items = []
+            for shape in slide.Shapes:
+                position: list[float | None] = []
+                for attr in ("Left", "Top"):
+                    try:
+                        position.append(float(getattr(shape, attr)))
+                    except Exception:  # noqa: BLE001
+                        position.append(None)
+                items.append((shape, position))
+            captured.append(items)
+
+        setup = presentation.PageSetup
+        setup.SlideWidth = max(72.0, float(right - left))
+        setup.SlideHeight = max(72.0, float(bottom - top))
+
+        for items in captured:
+            for shape, (old_left, old_top) in items:
+                if old_left is not None:
+                    with contextlib.suppress(Exception):
+                        shape.Left = old_left - left
+                if old_top is not None:
+                    with contextlib.suppress(Exception):
+                        shape.Top = old_top - top
 
     def describe(self, src: Path | str) -> tuple[int, float | None]:
         """读取幻灯片页数与宽高比（旧版 .ppt 无法用 python-pptx 探测时使用）。"""
@@ -259,11 +356,78 @@ class PowerPointSession:
                 with contextlib.suppress(Exception):
                     presentation.Close()
 
+    # -- 内容范围（旧版 .ppt 专用；.pptx 走 python-pptx 更快）------------
+    def shape_bounds(self, src: Path | str) -> list:
+        """读每页顶层形状的并集（点）。旧版 .ppt 没有纯 Python 解析器，只能问 PowerPoint。
+
+        形状数量设了上限：畸形文件里几千个形状逐个 COM 调用会拖成分钟级，
+        到了上限就不再继续读（返回的范围会偏小，由调用方提示"可能仍被裁"）。
+        """
+        if self._app is None:
+            raise OfficeUnavailableError("PowerPoint 会话尚未启动")
+        from imgconv.slides import ContentBounds
+
+        src = Path(src).resolve()
+        presentation = None
+        pages = []
+        try:
+            presentation = self._app.Presentations.Open(str(src), True, False, False)
+            slide_w = float(presentation.PageSetup.SlideWidth)
+            slide_h = float(presentation.PageSetup.SlideHeight)
+            count = int(presentation.Slides.Count)
+            budget = _MAX_COM_SHAPES
+            for index in range(1, count + 1):
+                shapes = presentation.Slides(index).Shapes
+                total = int(shapes.Count)
+                lefts: list[float] = []
+                tops: list[float] = []
+                rights: list[float] = []
+                bottoms: list[float] = []
+                truncated = False
+                for position in range(1, total + 1):
+                    if budget <= 0:
+                        truncated = True
+                        break
+                    budget -= 1
+                    shape = shapes(position)
+                    with contextlib.suppress(Exception):
+                        left = float(shape.Left)
+                        top = float(shape.Top)
+                        lefts.append(left)
+                        tops.append(top)
+                        rights.append(left + float(shape.Width))
+                        bottoms.append(top + float(shape.Height))
+                pages.append(
+                    ContentBounds(
+                        left=min(lefts) if lefts else 0.0,
+                        top=min(tops) if tops else 0.0,
+                        right=max(rights) if rights else slide_w,
+                        bottom=max(bottoms) if bottoms else slide_h,
+                        slide_width=slide_w,
+                        slide_height=slide_h,
+                        shapes=len(lefts),
+                        incomplete=truncated or len(lefts) < total,
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001
+            raise OfficeUnavailableError(
+                f"PowerPoint 读取形状范围失败：{src.name} —— {exc}"
+            ) from exc
+        finally:
+            if presentation is not None:
+                with contextlib.suppress(Exception):
+                    presentation.Close()
+        return pages
+
     # -- 内部 -----------------------------------------------------------
-    def _cache_for(self, src: Path) -> Path:
-        digest = hashlib.sha1(
-            f"{src}:{src.stat().st_mtime_ns}:{src.stat().st_size}".encode("utf-8")
-        ).hexdigest()[:16]
+    def _cache_for(
+        self, src: Path, expand: tuple[float, float, float, float] | None = None
+    ) -> Path:
+        key = f"{src}:{src.stat().st_mtime_ns}:{src.stat().st_size}"
+        if expand is not None:
+            # 展开画幅后的 PDF 与原画幅的不是同一份，缓存键必须分开
+            key += "|expand:" + ",".join(f"{value:.2f}" for value in expand)
+        digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
         return self._cache_dir / f"{digest}.pdf"
 
 

@@ -189,3 +189,159 @@ class TestExportGuards:
         finally:
             session._app = None
             session.__exit__(None, None, None)
+
+
+class FakePresentation:
+    """假 Presentation：只记下 SaveAs 的目标，并按需落一个假 PDF。"""
+
+    def __init__(self) -> None:
+        self.closed = False
+        self.saved_to: str | None = None
+
+    def SaveAs(self, path, fmt) -> None:  # noqa: N802 - 模拟 COM 命名
+        self.saved_to = str(path)
+        with open(path, "wb") as handle:
+            handle.write(b"%PDF-1.4 fake")
+
+    def Close(self) -> None:  # noqa: N802
+        self.closed = True
+
+
+class FakeApp:
+    """假 Application：记录 Presentations.Open 的参数。"""
+
+    def __init__(self) -> None:
+        self.opened: list[tuple[str, bool]] = []
+        self.presentation = FakePresentation()
+
+    @property
+    def Presentations(self):  # noqa: N802
+        return self
+
+    def Open(self, path, readonly, untitled, withwindow):  # noqa: N802
+        self.opened.append((str(path), bool(readonly)))
+        return self.presentation
+
+
+class TestExportWithExpand:
+    """内容溢出画幅时：改的是副本、原文件不动、PDF 缓存键要分开。"""
+
+    @staticmethod
+    def _deck(tmp_path):
+        from pptx import Presentation
+
+        prs = Presentation()
+        prs.slide_width, prs.slide_height = int(9144000), int(6858000)
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        from pptx.enum.shapes import MSO_SHAPE
+        from pptx.util import Inches
+
+        slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(-1), Inches(6), Inches(4), Inches(3))
+        path = tmp_path / "deck.pptx"
+        prs.save(str(path))
+        return path
+
+    def test_opens_staged_copy_readonly(self, tmp_path):
+        deck = self._deck(tmp_path)
+        original = deck.read_bytes()
+
+        session = office.PowerPointSession(cache_dir=tmp_path / "cache")
+        try:
+            session._app = FakeApp()
+            target = session.export_pdf(deck, expand=(0.0, 0.0, 800.0, 620.0))
+
+            opened_path, readonly = session._app.opened[0]
+            assert readonly is True, "副本可以只读打开，不该让 PowerPoint 写文件"
+            assert opened_path != str(deck.resolve()), "必须打开副本，不能动源文件"
+            assert target.exists() and target.stat().st_size > 0
+            assert deck.read_bytes() == original, "源文件必须一字未改"
+        finally:
+            session.__exit__(None, None, None)
+
+    def test_cache_key_differs_between_canvases(self, tmp_path):
+        deck = self._deck(tmp_path)
+        session = office.PowerPointSession(cache_dir=tmp_path / "cache")
+        try:
+            plain = session._cache_for(deck)
+            expanded = session._cache_for(deck, (0.0, 0.0, 800.0, 620.0))
+            assert plain != expanded, "扩画幅后的 PDF 与原画幅的不是同一份缓存"
+        finally:
+            session.__exit__(None, None, None)
+
+
+class FakePresentation:
+    """假 Presentation：只记下 SaveAs 的目标，并按需落一个假 PDF。"""
+
+    def __init__(self) -> None:
+        self.closed = False
+        self.saved_to: str | None = None
+
+    def SaveAs(self, path, fmt) -> None:  # noqa: N802 - 模拟 COM 命名
+        self.saved_to = str(path)
+        with open(path, "wb") as handle:
+            handle.write(b"%PDF-1.4 fake")
+
+    def Close(self) -> None:  # noqa: N802
+        self.closed = True
+
+
+class FakeApp:
+    """假 Application：记录 Presentations.Open 的参数。"""
+
+    def __init__(self) -> None:
+        self.opened: list[tuple[str, bool]] = []
+        self.presentation = FakePresentation()
+
+    @property
+    def Presentations(self):  # noqa: N802
+        return self
+
+    def Open(self, path, readonly, untitled, withwindow):  # noqa: N802
+        self.opened.append((str(path), bool(readonly)))
+        return self.presentation
+
+
+class TestExportWithExpand:
+    """内容溢出画幅时：改的是副本、原文件不动、PDF 缓存键要分开。"""
+
+    @staticmethod
+    def _deck(tmp_path):
+        from pptx import Presentation
+
+        prs = Presentation()
+        prs.slide_width, prs.slide_height = int(9144000), int(6858000)
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        from pptx.enum.shapes import MSO_SHAPE
+        from pptx.util import Inches
+
+        slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(-1), Inches(6), Inches(4), Inches(3))
+        path = tmp_path / "deck.pptx"
+        prs.save(str(path))
+        return path
+
+    def test_opens_staged_copy_readonly(self, tmp_path):
+        deck = self._deck(tmp_path)
+        original = deck.read_bytes()
+
+        session = office.PowerPointSession(cache_dir=tmp_path / "cache")
+        try:
+            session._app = FakeApp()
+            target = session.export_pdf(deck, expand=(0.0, 0.0, 800.0, 620.0))
+
+            opened_path, readonly = session._app.opened[0]
+            assert readonly is True, "副本可以只读打开，不该让 PowerPoint 写文件"
+            assert opened_path != str(deck.resolve()), "必须打开副本，不能动源文件"
+            assert target.exists() and target.stat().st_size > 0
+            assert deck.read_bytes() == original, "源文件必须一字未改"
+        finally:
+            session.__exit__(None, None, None)
+
+    def test_cache_key_differs_between_canvases(self, tmp_path):
+        deck = self._deck(tmp_path)
+        session = office.PowerPointSession(cache_dir=tmp_path / "cache")
+        try:
+            plain = session._cache_for(deck)
+            expanded = session._cache_for(deck, (0.0, 0.0, 800.0, 620.0))
+            assert plain != expanded, "扩画幅后的 PDF 与原画幅的不是同一份缓存"
+        finally:
+            session.__exit__(None, None, None)

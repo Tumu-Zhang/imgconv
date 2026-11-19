@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from imgconv import encode, ingest, office, render
+from imgconv import encode, ingest, office, render, slides, trim
 from imgconv.encode import EncodeResult, VolumeLimitUnreachable
 from imgconv.ingest import SourceInfo, SourceKind
 from imgconv.model import (
@@ -25,6 +25,7 @@ from imgconv.model import (
 
 ProgressCallback = Callable[["ProgressEvent"], None]
 CancelCheck = Callable[[], bool]
+StageCallback = Callable[[str], None]
 
 
 @dataclass
@@ -139,10 +140,15 @@ class Converter:
         *,
         progress: ProgressCallback | None = None,
         should_cancel: CancelCheck | None = None,
+        on_stage: StageCallback | None = None,
     ) -> None:
         self.spec = spec
         self.progress = progress
         self.should_cancel = should_cancel or (lambda: False)
+        # 阶段回调：把「现在到底在干什么」写进界面日志。
+        # 没有它，一次慢转换（PowerPoint 导出几十秒）在日志里完全静默，
+        # 用户只能看到一个不动的进度条，误以为是卡死（BUG-002）。
+        self.on_stage = on_stage or (lambda _message: None)
         self._ppt: office.PowerPointSession | None = None
 
     # -- 公共入口 -------------------------------------------------------
@@ -221,10 +227,16 @@ class Converter:
             else:  # pragma: no cover - probe 已拦截
                 raise RuntimeError(f"不支持的文件类型：{source.suffix}")
         except (VolumeLimitUnreachable, office.OfficeUnavailableError, SpecError) as exc:
+            # 用户点了取消时，COM 被强行打断的报错没有诊断价值，换成可读的说明
+            message = (
+                "转换已取消（PowerPoint 会话被主动结束）"
+                if self.should_cancel()
+                else str(exc)
+            )
             return [
                 TaskResult(
                     source=source, page=None, out_path=None, ok=False,
-                    error=str(exc), source_kind=info.kind,
+                    error=message, source_kind=info.kind,
                     elapsed=time.perf_counter() - started,
                 )
             ]
@@ -246,27 +258,42 @@ class Converter:
     # -- 分支实现 -------------------------------------------------------
     def _convert_raster(self, source: Path, info: SourceInfo) -> list[TaskResult]:
         loaded = render.load_raster(source)
-        aspect = loaded.image.size[0] / loaded.image.size[1]
+        image = loaded.image
+        warnings = list(loaded.warnings)
+
+        if self.spec.trim_margin:
+            box = trim.detect(image)
+            if box is None:
+                warnings.append("未检测到可裁剪的空白边（内容已铺满或底色过于接近）")
+            else:
+                # 向外让出一个像素：宁可留一丝白边，也不切掉阈值边界上的边缘像素
+                box = box.padded()
+                image = trim.crop(image, box)
+                warnings.append(box.describe())
+
+        aspect = image.size[0] / image.size[1]
         geometry = self.spec.resolve(aspect)
         geometry, scale_warnings = fit_within(
-            geometry, loaded.image.size, allow_upscale=self.spec.allow_upscale
+            geometry, image.size, allow_upscale=self.spec.allow_upscale
         )
 
         target_px = geometry.pixel_size
-        image, resize_warnings = render.resize_raster(loaded.image, target_px)
+        self._stage(f"正在重采样到 {target_px[0]} x {target_px[1]} px…")
+        image, resize_warnings = render.resize_raster(image, target_px)
 
         out_path = self._plan_output(source, page=1, multi_page=False)
         if out_path is None:
             return [TaskResult(
                 source=source, page=1, out_path=None, ok=False,
-                error="同名文件已存在，按「跳过」策略未输出", warnings=loaded.warnings,
+                error="同名文件已存在，按「跳过」策略未输出", warnings=warnings,
             )]
 
+        self._stage(f"正在编码 {out_path.suffix or self.spec.fmt.extension}…")
         result = encode.encode_to_file(image, out_path, self.spec)
         return [TaskResult(
             source=source, page=1, out_path=out_path, ok=True,
             geometry=geometry, num_bytes=result.num_bytes, encode=result,
-            warnings=loaded.warnings + scale_warnings + resize_warnings + result.warnings,
+            warnings=warnings + scale_warnings + resize_warnings + result.warnings,
         )]
 
     def _convert_pdf(
@@ -285,9 +312,28 @@ class Converter:
                 if self.should_cancel():
                     break
                 index = page_no - 1
-                aspect = doc.page_aspect(index)
-                geometry = self.spec.resolve(aspect)
                 warnings: list[str] = []
+
+                # 自动裁白边：先在低分辨率探测图上找主体包围盒，再把目标像素
+                # 全部投到这块区域上 —— 白边既不占画布，也不占渲染内存。
+                clip = None
+                if self.spec.trim_margin:
+                    self._stage(f"第 {page_no} 页：正在探测空白边…")
+                    clip, ratio = doc.page_content_rect(index)
+                    if clip is None:
+                        warnings.append(
+                            f"第 {page_no} 页未检测到可裁剪的空白边（内容已铺满页面）"
+                        )
+                    else:
+                        warnings.append(
+                            f"第 {page_no} 页已裁去四周空白：内容占页面 {ratio * 100:.0f}%"
+                        )
+
+                aspect = (
+                    clip.width / clip.height if clip is not None
+                    else doc.page_aspect(index)
+                )
+                geometry = self.spec.resolve(aspect)
 
                 if self.spec.check_embedded_dpi:
                     embedded = doc.embedded_image_dpi(index)
@@ -298,7 +344,12 @@ class Converter:
                             "放大不会产生新细节，建议改为用矢量源或提高原始截屏分辨率。"
                         )
 
-                image, render_warnings = doc.render_page(index, geometry)
+                size_px = geometry.pixel_size
+                self._stage(
+                    f"第 {page_no}/{doc.page_count} 页：正在渲染 "
+                    f"{size_px[0]} x {size_px[1]} px @ {geometry.dpi} dpi…"
+                )
+                image, render_warnings = doc.render_page(index, geometry, clip=clip)
                 warnings.extend(render_warnings)
 
                 out_path = self._plan_output(source, page=page_no, multi_page=multi)
@@ -309,6 +360,7 @@ class Converter:
                     ))
                     continue
 
+                self._stage(f"第 {page_no} 页：正在编码 {out_path.suffix}…")
                 encoded = encode.encode_to_file(image, out_path, self.spec)
                 results.append(TaskResult(
                     source=source, page=page_no, out_path=out_path, ok=True,
@@ -319,10 +371,65 @@ class Converter:
 
     def _convert_slides(self, source: Path, info: SourceInfo) -> list[TaskResult]:
         session = self._ppt_session()
-        pdf_path = session.export_pdf(source)
-        return self._convert_pdf(source, info, pdf_path)
+
+        # 先问"到底画了多少东西"：PowerPoint 导出 PDF 只导出画幅内的内容，
+        # 溢出画幅的部分在 PDF 里根本不存在 —— 事后再裁白边也救不回来。
+        # 所以开启裁边时先量形状范围，需要的话把画幅扩到内容那么大再导出。
+        plan = None
+        if self.spec.trim_margin:
+            plan = self._content_canvas(session, source)
+
+        if plan is None:
+            self._stage("正在用 PowerPoint 打开并导出 PDF（首次启动 Office 会慢一些）…")
+            pdf_path = session.export_pdf(source)
+        else:
+            self._stage("正在按绘制范围扩展画幅并导出 PDF…")
+            pdf_path = session.export_pdf(source, expand=plan.rect)
+        self._stage("PowerPoint 已导出 PDF，开始逐页渲染…")
+
+        results = self._convert_pdf(source, info, pdf_path)
+        if plan is not None and plan.note:
+            # 画幅说明放在每条结果的最前面：它比"裁掉多少白"更值得先看到
+            for result in results:
+                result.warnings.insert(0, plan.note)
+        return results
+
+    def _content_canvas(self, session, source: Path):
+        """量出形状范围，决定是否需要扩画幅。失败一律返回 None（按原画幅走）。"""
+        try:
+            if source.suffix.lower() in (".pptx", ".pptm"):
+                pages = slides.bounds_from_pptx(source)
+            else:
+                # 旧版 .ppt 没有纯 Python 解析器，只能问 PowerPoint 本体
+                self._stage("正在读取幻灯片里各形状的位置…")
+                pages = session.shape_bounds(source)
+            plan = slides.plan_expansion(pages)
+        except Exception as exc:  # noqa: BLE001 - 量不出来不算致命，退回原画幅
+            self._stage(f"提示：无法读取形状范围（{type(exc).__name__}: {exc}），按原画幅导出")
+            return None
+        if plan is not None:
+            self._stage(plan.note)
+        return plan
+
+    def abort(self) -> None:
+        """请求中止（可从界面线程调用）。
+
+        COM 调用（PowerPoint 导出）不响应取消标志，光置位 `should_cancel` 得等
+        它自己跑完 —— 结束我们自己启动的那个 PowerPoint 进程，阻塞中的调用会
+        立刻抛错返回，转换线程随即退出。
+        """
+        session = self._ppt
+        if session is not None:
+            session.abort()
 
     # -- 内部工具 -------------------------------------------------------
+    def _stage(self, message: str) -> None:
+        """上报当前阶段；回调出问题绝不能连带拖垮转换本身。"""
+        try:
+            self.on_stage(message)
+        except Exception:  # noqa: BLE001
+            pass
+
     def _ppt_session(self) -> office.PowerPointSession:
         if self._ppt is None:
             self._ppt = office.PowerPointSession()

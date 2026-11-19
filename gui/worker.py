@@ -20,6 +20,7 @@ class ConversionWorker(QObject):
     """在独立线程执行一批转换。"""
 
     progress = Signal(int, int, str)   # 已完成文件数, 总数, 当前文件名
+    stage = Signal(str)                # 当前阶段（PowerPoint 导出 / 逐页渲染 / 编码）
     finished = Signal(object)          # ConversionReport
     failed = Signal(str)               # 未预期异常的可读描述
 
@@ -38,10 +39,19 @@ class ConversionWorker(QObject):
         # 每个文件自己的尺寸参数（行级），键为 str(源文件路径)
         self._spec_overrides = spec_overrides
         self._cancel = threading.Event()
+        # 转换器实例：run() 里创建，供 cancel() 从界面线程请求中止
+        self._converter: Converter | None = None
 
     def cancel(self) -> None:
-        """请求取消。当前文件会处理完，之后不再开始新文件。"""
+        """请求取消。当前文件会处理完，之后不再开始新文件。
+
+        额外做一件事：结束正在被驱动的 PowerPoint 进程 —— 否则卡在 COM
+        SaveAs 里的转换会一直不动，「取消」按钮等于没用。
+        """
         self._cancel.set()
+        converter = self._converter
+        if converter is not None:
+            converter.abort()
 
     @Slot()
     def run(self) -> None:
@@ -52,13 +62,17 @@ class ConversionWorker(QObject):
                     event.completed_files, event.total_files, event.current
                 ),
                 should_cancel=self._cancel.is_set,
+                on_stage=self.stage.emit,
             )
+            self._converter = converter
             report: ConversionReport = converter.run(
                 self._files, self._page_overrides, self._spec_overrides
             )
         except Exception as exc:  # noqa: BLE001 - 兜住一切，避免线程静默死亡
             self.failed.emit(f"{type(exc).__name__}: {exc}")
             return
+        finally:
+            self._converter = None
         self.finished.emit(report)
 
 

@@ -488,7 +488,9 @@ class TestPreview:
         window.unit_combo.setCurrentIndex(1)  # cm
         window.dpi_combo.setCurrentText("300")
         window._refresh_preview()
-        assert "1004 × 803 px" in window.preview_label.text()
+        # 规格仪表盘把单位降两号单独包在 span 里，故分行断言（S1）
+        text = window.preview_label.text()
+        assert "1004 × 803" in text and "px" in text
         assert "1004 x 803 px" in window.table.item(0, COL_TARGET).text()
 
     def test_pixel_mode_switches_inputs(self, window, tmp_path):
@@ -514,10 +516,10 @@ class TestPreview:
         window.phys_width.setText("8.5")
         window.dpi_combo.setCurrentText("300")
         window._refresh_preview()
-        assert "1004 × 803 px" in window.preview_label.text()
+        assert "1004 × 803" in window.preview_label.text()
         window.dpi_combo.setCurrentText("600")
         window._refresh_preview()
-        assert "2008 × 1606 px" in window.preview_label.text()
+        assert "2008 × 1606" in window.preview_label.text()
 
 
 class TestOutputNaming:
@@ -1078,7 +1080,12 @@ class TestBrandIcon:
 
 class TestCloseDuringConversion:
     def test_closing_while_running_is_safe(self, qapp, window, tmp_path):
-        """转换过程中关窗，不能让 QThread 在运行中被销毁。"""
+        """转换过程中关窗：主线程不阻塞，线程收尾后才真正退出。
+
+        旧实现在 closeEvent 里 thread.wait(15_000)：主线程一卡，Windows 就把
+        标题栏刷成「未响应」，等不到就把线程置成孤儿继续关窗 —— 用户看到的是
+        "窗口假死、日志空白，但图片确实生成了"（BUG-002）。现在改成异步停止。
+        """
         for index in range(2):
             make_raster(tmp_path / f"f{index}.png", (1200, 900))
         window.add_paths(sorted(tmp_path.glob("*.png")))
@@ -1089,11 +1096,13 @@ class TestCloseDuringConversion:
         window._start()
         assert window._thread is not None
 
+        started = time.perf_counter()
         window.close()                      # 立刻关窗，线程多半还在跑
-        assert not window.isVisible()
+        assert time.perf_counter() - started < 2.0, "关窗仍然阻塞了主线程"
+        assert window._closing, "关窗请求没有进入「先停后关」流程"
 
         # 线程最终应自行收工，不留悬挂线程
-        deadline = time.time() + 30
+        deadline = time.time() + 40
         while time.time() < deadline:
             qapp.processEvents()
             thread = window._thread
@@ -1101,6 +1110,28 @@ class TestCloseDuringConversion:
                 break
             time.sleep(0.02)
         qapp.processEvents()
+        assert window._thread is None
+
+    def test_clean_exit_marker_written_after_deferred_close(self, qapp, window, tmp_path):
+        """「先停后关」走的仍是正常退出：会话日志要带上正常退出标记。"""
+        from gui.session_log import OK_FOOTER
+
+        make_raster(tmp_path / "slow.png", (1200, 900))
+        window.add_paths([tmp_path / "slow.png"])
+        window.phys_width.setText("30")
+        window.dpi_combo.setCurrentText("600")
+        window.out_dir = str(tmp_path / "out")
+        window._start()
+        window.close()
+
+        deadline = time.time() + 40
+        while time.time() < deadline and window._thread is not None:
+            qapp.processEvents()
+            time.sleep(0.02)
+        qapp.processEvents()
+
+        assert window._session_log.path is not None
+        assert OK_FOOTER in window._session_log.path.read_text(encoding="utf-8")
 
 
 class TestMaintenanceFeatures:
@@ -1548,6 +1579,29 @@ class TestWeeklyW42:
             t = theme.DARK if name == "dark" else theme.LIGHT
             assert self._contrast(t.border_input, t.bg_secondary) >= 3.0, name
 
+    def test_id_buttons_have_visible_focus_rings(self, qapp):
+        """ID 选择器不能再用特异性压掉键盘焦点环（UI-024）。"""
+        from gui import theme
+
+        selectors = (
+            "QPushButton#ghostBtn:focus",
+            "QPushButton#accentOutline:focus",
+            "QPushButton#primary:focus",
+        )
+        for name in ("light", "dark"):
+            t = theme.DARK if name == "dark" else theme.LIGHT
+            qss = theme.build_stylesheet(name)
+            for selector in selectors:
+                start = qss.index(selector)
+                block = qss[start : qss.index("}", start)]
+                assert "border" in block, (name, selector)
+                assert "2px" in block, (name, selector)
+
+            # ghost 用 accent；主按钮和描边按钮用 accent_pressed。
+            # 两者都必须和外侧窗口底色形成至少 3:1 的非文本对比度。
+            for color in (t.accent, t.accent_pressed):
+                assert self._contrast(color, t.bg_secondary) >= 3.0, name
+
     # -- P3 惯例键位与语义 ----------------------------------------------------
     def test_remove_action_has_delete_shortcut(self, window):
         from PySide6.QtGui import QKeySequence
@@ -1582,3 +1636,127 @@ class TestWeeklyW42:
 
         assert not window.name_hint_label.isHidden()
         assert i18n.t("name_hint") in window.name_hint_label.text()
+
+
+class TestTrimMargin:
+    """自动裁白边开关：面板 → 规格 → 行级参数 → 设置持久化。"""
+
+    def test_default_is_off(self, window):
+        assert window.trim_check.isChecked() is False
+        assert window._build_spec().trim_margin is False
+
+    def test_toggle_reaches_spec(self, window):
+        window.trim_check.setChecked(True)
+        assert window._build_spec().trim_margin is True
+        window.trim_check.setChecked(False)
+        assert window._build_spec().trim_margin is False
+
+    def test_per_row_parameter_round_trip(self, window, tmp_path):
+        """勾选状态跟行走：切到另一行时面板要显示那一行自己的值。"""
+        make_raster(tmp_path / "a.png", (400, 300))
+        make_raster(tmp_path / "b.png", (400, 300))
+        window.add_paths([tmp_path / "a.png", tmp_path / "b.png"])
+
+        window.table.selectRow(0)
+        window.trim_check.setChecked(True)
+        window._capture_size_params()
+        assert window._size_params[str(tmp_path / "a.png")].trim_margin is True
+
+        window.table.selectRow(1)
+        assert window.trim_check.isChecked() is False, "另一行不该被连带勾上"
+
+    def test_setting_is_persisted(self, window, tmp_path):
+        from PySide6.QtCore import QSettings
+
+        from gui import main_window as mw
+
+        window.trim_check.setChecked(True)
+        window._save_settings()
+
+        settings_file = tmp_path / "settings.ini"
+        stored = QSettings(str(settings_file), QSettings.Format.IniFormat)
+        assert stored.value("trim_margin", False, type=bool) is True
+
+        # 第二个窗口读同一份配置：开关应当回显为勾选
+        second = mw.MainWindow()
+        try:
+            assert second.trim_check.isChecked() is True
+        finally:
+            second.close()
+
+    def test_tooltip_explains_edge_based_detection(self, window):
+        from gui import i18n
+
+        assert window.trim_check.toolTip() == i18n.t("trim_hint")
+
+
+class TestWeeklyW44:
+    """收集部 W44 建议队列落地：Toast 退让/键盘可关/读屏、chevron、行过渡。"""
+
+    def test_toast_sits_bottom_centered(self, window):
+        """完成通知走窗口底部水平居中，不再压住右栏动作条。"""
+        from PySide6.QtCore import QPoint
+
+        window.resize(1200, 820)
+        toast = window.toast
+        toast.show_message("转换完成", "3 个文件", auto_close_ms=0)
+
+        host_origin = window.mapToGlobal(QPoint(0, 0))
+        toast_origin = toast.mapToGlobal(QPoint(0, 0))
+        left = toast_origin.x() - host_origin.x()
+        top = toast_origin.y() - host_origin.y()
+
+        assert abs(left - (window.width() - toast.width()) // 2) <= 2, "必须水平居中"
+        # 卡片底边（去掉投影留白）距窗口底部 = MARGIN
+        card_bottom = top + toast.height() - toast.SHADOW_PAD
+        assert abs(window.height() - card_bottom - toast.MARGIN) <= 2
+        toast.close_now()
+
+    def test_escape_closes_resident_toast(self, window):
+        """驻留 Toast 可用 Esc 关闭（a11y-015 键盘一步可消除）。"""
+        from PySide6.QtTest import QTest
+
+        window.toast.show_message("转换失败", "2 个文件出错", level="warn", auto_close_ms=0)
+        assert not window.toast.isHidden()
+
+        window._dismiss_toast_on_escape()
+        QTest.qWait(300)
+        assert window.toast.isHidden()
+
+    def test_escape_does_not_steal_from_line_edit(self, window, monkeypatch):
+        """输入框获得焦点时 Esc 归输入框，不关闭浮层。"""
+        window.toast.show_message("转换完成", "", auto_close_ms=0)
+        monkeypatch.setattr(
+            QApplication, "focusWidget", staticmethod(lambda: window.phys_width)
+        )
+        window._dismiss_toast_on_escape()
+        assert not window.toast.isHidden(), "编辑中的 Esc 不该被浮层抢走"
+        window.toast.close_now()
+
+    def test_toast_announces_alert(self, window, monkeypatch):
+        """状态消息向辅助技术播报 Alert（a11y-011）。"""
+        from gui import widgets as widgets_module
+
+        events = []
+        monkeypatch.setattr(
+            widgets_module.QAccessible,
+            "updateAccessibility",
+            staticmethod(lambda event: events.append(event)),
+        )
+        window.toast.show_message("转换完成", "3 个文件", auto_close_ms=0)
+        assert events, "完成通知必须发出一次无障碍事件"
+        window.toast.close_now()
+
+    def test_format_rows_switch_after_transition(self, window):
+        """TIFF / JPEG 编码行按格式互斥显隐（过渡结束后行才收起）。"""
+        from PySide6.QtTest import QTest
+
+        form = window._format_form
+        window.fmt_combo.setCurrentIndex(0)  # TIFF
+        assert form.isRowVisible(window.row_tiff)
+        assert not form.isRowVisible(window.row_jpeg)
+
+        window.fmt_combo.setCurrentIndex(2)  # JPEG
+        QTest.qWait(400)
+        assert not form.isRowVisible(window.row_tiff)
+        assert form.isRowVisible(window.row_jpeg)

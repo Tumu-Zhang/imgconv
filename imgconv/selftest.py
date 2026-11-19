@@ -155,6 +155,20 @@ def run_selftest(
     except Exception as exc:  # noqa: BLE001
         step("转换 PDF -> PNG（逐页）", False, f"{type(exc).__name__}: {exc}")
 
+    # --- python-pptx：只影响「加入队列时读页数/宽高比」，缺了不算失败 ----
+    # 打包时曾把它硬依赖的 lxml 排除掉，于是 exe 里它永久 import 失败：
+    # 日志每次加 PPT 都报一条警告，等比换算拿不到源比例（BUG-003）。
+    # 这一行就是为了下次一眼看出来。
+    try:
+        from pptx import Presentation  # noqa: F401
+
+        lines.append("[通过] python-pptx —— 可直接读取 PPTX 页数与宽高比")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(
+            f"[跳过] python-pptx —— {type(exc).__name__}: {exc}"
+            "（不影响转换，PPT 的页数与比例改由 PowerPoint 读取）"
+        )
+
     # --- PowerPoint（缺了不算失败，如实报告）---------------------------
     try:
         from imgconv import office
@@ -200,6 +214,20 @@ def run_selftest(
                 for item in extra_report.results:
                     for warning in item.warnings:
                         lines.append(f"        提示：{warning}")
+
+                # 幻灯片额外报一行"形状范围"：扩画幅依赖 python-pptx 读 XML，
+                # 这正是打包最容易漏的一环（BUG-003 的翻版），要能被自检照到。
+                if extra.suffix.lower() in (".pptx", ".pptm"):
+                    try:
+                        from imgconv import slides
+
+                        plan = slides.plan_expansion(slides.bounds_from_pptx(extra))
+                        lines.append(
+                            "[通过] 形状范围 —— "
+                            + (plan.note if plan else "内容都在画幅内，无需扩画幅")
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        lines.append(f"[跳过] 形状范围 —— {type(exc).__name__}: {exc}")
             except Exception as exc:  # noqa: BLE001
                 step(f"真实文件 {extra.name}", False, f"{type(exc).__name__}: {exc}")
 

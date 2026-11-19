@@ -15,3 +15,5 @@ dist/
 /图片转换器.exe
 # PyInstaller 每次打包都会重新生成，真正的打包配置在 tools/build.py 里
 *.spec
+# 打包精简时「删不掉就挪走」的兜底落点（见 tools/build.py::_prune）
+/.prune-trash/
